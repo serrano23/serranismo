@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Quiz Familiar</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body { font-family: sans-serif; background: #f7f7f7; margin: 0; padding: 2em; }
+    .container { display: flex; gap: 2em; align-items: flex-start; }
+    .canvas-wrap { position: relative; border: 2px solid #ccc; }
+    #main-canvas { display: block; cursor: crosshair; background: #fff; }
+    .handle { position: absolute; width: 12px; height: 12px; background: #fff; border: 2px solid #1976d2; border-radius: 3px; z-index: 3; }
+    .handle:hover { background: #1976d2; }
+    .member-col { display: flex; flex-direction: column; min-width: 260px; }
+    #edit-pane { background: #fff; padding: 1em; border-radius: 8px; box-shadow: 0 2px 8px #0001; margin-bottom: 1em; }
+    #edit-pane h3 { margin-top: 0;}
+    .form-row { display: block; margin-bottom: 1em; }
+    .member-list { background: #fff; padding: 1em; border-radius: 8px; box-shadow: 0 2px 8px #0001;}
+    .member-list h2 { margin-top: 0; }
+    .member-list ul { padding-left: 1.2em; }
+    .member-list li { margin-bottom: .5em;}
+    .button { padding: .4em 1em; margin: .2em 0; border: none; border-radius: 4px; background: #1976d2; color: #fff; cursor: pointer;}
+    .button:disabled { background: #aaa; }
+    .score-good { color: green;}
+    .score-bad { color: red;}
+    .child-count { background: #e3f2fd; color: #1976d2; padding: 2px 8px; border-radius: 10px; display: inline-block; margin-bottom: 5px; font-size: 1em; }
+    #quiz-modal { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; background: rgba(40,40,60,.92); display: none; align-items:center; justify-content:center; z-index: 1000;}
+    #quiz-modal>div { background: #fff; padding: 2em; border-radius: 10px; min-width: 320px;}
+    .quiz-big { font-size: 2.1em; font-weight: bold; margin-bottom: 1em; }
+    .quiz-img-big { width: 160px !important; height: 160px !important; border-radius: 10px; }
+    .quiz-opt { margin: 1em 0; }
+    .quiz-opt img { width: 80px; height: 80px; border-radius: 8px; margin: 0 0.5em; vertical-align: middle; object-fit: cover; }
+    @media (max-width:1000px) {
+      .container { flex-direction: column; }
+      .member-col { min-width: 0; }
+      #edit-pane { margin-bottom: 1em;}
+    }
+  </style>
+</head>
+<body>
+  <h1>Quiz Familiar</h1>
+  <div id="copy-url"></div>
+  <div class="container">
+    <div class="canvas-wrap" style="position:relative;">
+      <label for="img-input" style="font-size:1em;">Subir imagen familiar: <input type="file" id="img-input" accept="image/*"></label>
+      <canvas id="main-canvas" width="400" height="300"></canvas>
+      <div id="handles-layer" style="position:absolute;top:0;left:0;z-index:3;pointer-events:none;"></div>
+    </div>
+    <div class="member-col">
+      <button class="button" id="start-quiz" disabled style="margin-bottom:1em;">Iniciar Quiz</button>
+      <div id="edit-pane" style="display:none;">
+        <h3>Editar Miembro</h3>
+        <form id="edit-form">
+          <div class="form-row">
+            <label>Nombre:<br>
+              <input id="edit-name" required>
+            </label>
+          </div>
+          <div class="form-row">
+            <label>Esposo/a:<br>
+              <select id="edit-spouse">
+                <option value="">(Ninguno)</option>
+              </select>
+            </label>
+          </div>
+          <div class="form-row">
+            <span class="child-count" id="child-counter"></span>
+          </div>
+          <div class="form-row">
+            <label>Hijos:<br>
+              <select id="edit-children" multiple size="6"></select>
+            </label>
+          </div>
+          <div style="margin-top:1em; display:flex; gap:1em;">
+            <button type="submit" class="button">Guardar</button>
+            <button type="button" class="button" id="delete-member" style="background:#b71c1c;">Eliminar miembro</button>
+          </div>
+        </form>
+      </div>
+      <div class="member-list">
+        <h2>Miembros</h2>
+        <ul id="member-list"></ul>
+      </div>
+    </div>
+  </div>
+  <!-- Quiz Modal -->
+  <div id="quiz-modal">
+    <div>
+      <div id="quiz-content"></div>
+      <div style="margin-top:1em;">
+        <button class="button" id="quiz-exit" style="background:#aaa;">Salir</button>
+      </div>
+    </div>
+  </div>
+  <script>
+  let state = {
+    image: null, imgWidth: 0, imgHeight: 0,
+    members: []
+  };
+  let selectedId = null;
+  let drawing = false, startPt = null, tempRect = null;
+  let resizing = false, moving = false, resizeDir = null, moveOffset = null;
+  let quiz = null;
+
+  const imgInput = document.getElementById('img-input');
+  const canvas = document.getElementById('main-canvas');
+  const memberList = document.getElementById('member-list');
+  const startQuizBtn = document.getElementById('start-quiz');
+  const copyUrlDiv = document.getElementById('copy-url');
+  const editPane = document.getElementById('edit-pane');
+  const editForm = document.getElementById('edit-form');
+  const editName = document.getElementById('edit-name');
+  const editSpouse = document.getElementById('edit-spouse');
+  const editChildren = document.getElementById('edit-children');
+  const childCounter = document.getElementById('child-counter');
+  const deleteMemberBtn = document.getElementById('delete-member');
+  const handlesLayer = document.getElementById('handles-layer');
+  const quizModal = document.getElementById('quiz-modal');
+  const quizContent = document.getElementById('quiz-content');
+  const quizExit = document.getElementById('quiz-exit');
+
+  function saveToUrl() {
+    const data = JSON.stringify({
+      image: state.image,
+      imgWidth: state.imgWidth,
+      imgHeight: state.imgHeight,
+      members: state.members
+    });
+    const enc = encodeURIComponent(btoa(unescape(encodeURIComponent(data))));
+    const url = window.location.origin + window.location.pathname + '?session=' + enc;
+    window.history.replaceState({}, '', url);
+    copyUrlDiv.innerHTML = `
+      <button class="button" onclick="navigator.clipboard.writeText('${url.replace(/'/g,"\\'")}').then(()=>this.textContent='¡Copiado!')">Copiar enlace de sesión</button>
+      <span style="font-size:.9em;color:#888">(comparte o guarda para continuar después)</span>
+    `;
+  }
+  function loadFromUrl() {
+    const p = new URLSearchParams(location.search).get('session');
+    if (!p) return false;
+    try {
+      const data = JSON.parse(decodeURIComponent(escape(atob(decodeURIComponent(p)))));
+      Object.assign(state, data);
+      return true;
+    } catch(e) { return false; }
+  }
+  function loadImage(dataUrl) {
+    const img = new window.Image();
+    img.onload = function() {
+      state.imgWidth = img.width;
+      state.imgHeight = img.height;
+      canvas.width = img.width;
+      canvas.height = img.height;
+      handlesLayer.style.width = img.width+"px";
+      handlesLayer.style.height = img.height+"px";
+      drawCanvas();
+    };
+    img.src = dataUrl;
+  }
+  function drawCanvas() {
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    if (state.image) {
+      const img = new window.Image();
+      img.onload = () => {
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        state.members.forEach(m=>{
+          ctx.strokeStyle = (m.id === selectedId) ? '#1976d2' : '#d32f2f';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(...m.rect);
+          if(m.name){
+            ctx.fillStyle = 'rgba(25,118,210,0.85)';
+            ctx.font = '13px sans-serif';
+            ctx.fillText(m.name, m.rect[0]+2, m.rect[1]+14);
+          }
+        });
+        if (tempRect) {
+          ctx.strokeStyle = 'deepskyblue';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([6, 4]);
+          ctx.strokeRect(...tempRect);
+          ctx.setLineDash([]);
+        }
+      };
+      img.src = state.image;
+    } else {
+      ctx.fillStyle = '#eee'; ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.fillStyle = '#888';
+      ctx.font = '24px sans-serif';
+      ctx.fillText('Sube una imagen', 60, 160);
+    }
+    drawHandles();
+  }
+  imgInput.onchange = function(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev=> {
+      state.image = ev.target.result;
+      state.members = [];
+      selectedId = null;
+      loadImage(state.image);
+      saveToUrl(); renderMemberList(); showEditPane(null);
+    };
+    reader.readAsDataURL(file);
+  };
+  canvas.addEventListener('mousedown', function(e) {
+    if (!state.image) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = Math.round(e.clientX-rect.left), my = Math.round(e.clientY-rect.top);
+    let found = false;
+    for (let m of state.members) {
+      let [x,y,w,h] = m.rect;
+      if (mx >= x && mx <= x+w && my >= y && my <= y+h) {
+        selectedId = m.id;
+        drawCanvas();
+        showEditPane(m.id);
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      drawing = true;
+      startPt = {x: mx, y: my};
+      tempRect = null;
+      selectedId = null;
+      drawCanvas();
+      showEditPane(null);
+    }
+  });
+  canvas.addEventListener('mousemove', function(e) {
+    if (!state.image || !drawing) return;
+    const rect = canvas.getBoundingClientRect();
+    const curPt = {x: Math.round(e.clientX-rect.left), y: Math.round(e.clientY-rect.top)};
+    let x = Math.min(startPt.x, curPt.x), y = Math.min(startPt.y, curPt.y);
+    let w = Math.abs(startPt.x-curPt.x), h = Math.abs(startPt.y-curPt.y);
+    tempRect = [x, y, w, h];
+    drawCanvas();
+  });
+  canvas.addEventListener('mouseup', function(e) {
+    if (!state.image || !drawing) return;
+    drawing = false;
+    if (!tempRect) return;
+    let [x,y,w,h] = tempRect;
+    tempRect = null;
+    if (w<20 || h<20) { drawCanvas(); return; }
+    const id = Date.now()+Math.floor(Math.random()*99999);
+    state.members.push({id, name:'', rect:[x,y,w,h], spouse:null, children:[]});
+    saveToUrl(); drawCanvas(); renderMemberList();
+    selectedId = id;
+    showEditPane(id, true);
+  });
+  canvas.addEventListener('mouseleave', function() {
+    if (drawing) { drawing = false; tempRect = null; drawCanvas(); }
+  });
+  function drawHandles() {
+    handlesLayer.innerHTML = '';
+    if (!selectedId) return;
+    let m = state.members.find(m=>m.id===selectedId);
+    if (!m) return;
+    let [x,y,w,h] = m.rect;
+    let points = [
+      {x: x, y: y, dir:"nw"}, {x: x+w/2, y: y, dir:"n"}, {x: x+w, y: y, dir:"ne"},
+      {x: x+w, y: y+h/2, dir:"e"}, {x: x+w, y: y+h, dir:"se"},
+      {x: x+w/2, y: y+h, dir:"s"}, {x: x, y: y+h, dir:"sw"}, {x: x, y: y+h/2, dir:"w"}
+    ];
+    for (const p of points) {
+      let div = document.createElement('div');
+      div.className = "handle";
+      // Alinear exactamente: centro, esquina
+      div.style.left = (Math.round(p.x)-6)+"px";
+      div.style.top  = (Math.round(p.y)-6)+"px";
+      div.style.cursor = cursorForDir(p.dir);
+      div.style.pointerEvents = "all";
+      div.onmousedown = handleResizeStart(p.dir);
+      handlesLayer.appendChild(div);
+    }
+    let moveDiv = document.createElement('div');
+    moveDiv.style.position = "absolute";
+    moveDiv.style.left = Math.round(x)+"px"; moveDiv.style.top = Math.round(y)+"px";
+    moveDiv.style.width = Math.round(w)+"px"; moveDiv.style.height = Math.round(h)+"px";
+    moveDiv.style.cursor = "move";
+    moveDiv.style.background = "rgba(0,0,0,0)";
+    moveDiv.style.pointerEvents = "all";
+    moveDiv.onmousedown = handleMoveStart(x, y, w, h);
+    handlesLayer.appendChild(moveDiv);
+  }
+  function cursorForDir(dir) {
+    return {
+      "n": "ns-resize", "s": "ns-resize",
+      "e": "ew-resize", "w": "ew-resize",
+      "ne": "nesw-resize", "sw": "nesw-resize",
+      "nw": "nwse-resize", "se": "nwse-resize"
+    }[dir] || "pointer";
+  }
+  function handleResizeStart(dir) {
+    return function(e) {
+      e.preventDefault(); e.stopPropagation();
+      resizing = true; resizeDir = dir;
+      window.addEventListener('mousemove', handleResizing);
+      window.addEventListener('mouseup', handleResizeEnd);
+    };
+  }
+  function handleResizing(e) {
+    if (!resizing) return;
+    let m = state.members.find(m=>m.id===selectedId);
+    let [x,y,w,h] = m.rect;
+    const rect = canvas.getBoundingClientRect();
+    let mx = Math.round(e.clientX-rect.left), my = Math.round(e.clientY-rect.top);
+    let minw = 20, minh = 20;
+    switch (resizeDir) {
+      case "n": {
+        let dy = y+h - my;
+        if (dy < minh) my = y+h-minh;
+        m.rect[1] = my;
+        m.rect[3] = y+h-my;
+        break;
+      }
+      case "s": {
+        let dh = my - y;
+        if (dh < minh) my = y+minh;
+        m.rect[3] = my-y;
+        break;
+      }
+      case "e": {
+        let dw = mx-x;
+        if (dw < minw) mx = x+minw;
+        m.rect[2] = mx-x;
+        break;
+      }
+      case "w": {
+        let dx = x+w - mx;
+        if (dx < minw) mx = x+w-minw;
+        m.rect[0] = mx;
+        m.rect[2] = x+w-mx;
+        break;
+      }
+      case "nw": {
+        let dx = x+w - mx; let dy = y+h - my;
+        if (dx < minw) mx = x+w-minw;
+        if (dy < minh) my = y+h-minh;
+        m.rect[0]=mx; m.rect[1]=my; m.rect[2]=x+w-mx; m.rect[3]=y+h-my;
+        break;
+      }
+      case "ne": {
+        let dw = mx-x; let dy = y+h - my;
+        if (dw < minw) mx = x+minw;
+        if (dy < minh) my = y+h-minh;
+        m.rect[1]=my; m.rect[2]=mx-x; m.rect[3]=y+h-my;
+        break;
+      }
+      case "sw": {
+        let dx = x+w - mx; let dh = my-y;
+        if (dx < minw) mx = x+w-minw;
+        if (dh < minh) my = y+minh;
+        m.rect[0]=mx; m.rect[2]=x+w-mx; m.rect[3]=my-y;
+        break;
+      }
+      case "se": {
+        let dw = mx-x; let dh = my-y;
+        if (dw < minw) mx = x+minw;
+        if (dh < minh) my = y+minh;
+        m.rect[2]=mx-x; m.rect[3]=my-y;
+        break;
+      }
+    }
+    drawCanvas();
+    saveToUrl();
+  }
+  function handleResizeEnd() {
+    resizing = false;
+    window.removeEventListener('mousemove', handleResizing);
+    window.removeEventListener('mouseup', handleResizeEnd);
+    saveToUrl();
+  }
+  function handleMoveStart(x, y, w, h) {
+    return function(e) {
+      e.preventDefault(); e.stopPropagation();
+      moving = true;
+      const rect = canvas.getBoundingClientRect();
+      let mx = Math.round(e.clientX-rect.left), my = Math.round(e.clientY-rect.top);
+      moveOffset = {dx: mx-x, dy: my-y, w, h};
+      window.addEventListener('mousemove', handleMoving);
+      window.addEventListener('mouseup', handleMoveEnd);
+    };
+  }
+  function handleMoving(e) {
+    if (!moving) return;
+    let m = state.members.find(m=>m.id===selectedId);
+    const rect = canvas.getBoundingClientRect();
+    let mx = Math.round(e.clientX-rect.left), my = Math.round(e.clientY-rect.top);
+    let newX = mx-moveOffset.dx, newY = my-moveOffset.dy;
+    newX = Math.max(0, Math.min(canvas.width-moveOffset.w, newX));
+    newY = Math.max(0, Math.min(canvas.height-moveOffset.h, newY));
+    m.rect[0]=newX; m.rect[1]=newY;
+    drawCanvas();
+    saveToUrl();
+  }
+  function handleMoveEnd() {
+    moving = false;
+    moveOffset=null;
+    window.removeEventListener('mousemove', handleMoving);
+    window.removeEventListener('mouseup', handleMoveEnd);
+    saveToUrl();
+  }
+  function renderMemberList() {
+    memberList.innerHTML = '';
+    state.members.forEach(m=>{
+      const li = document.createElement('li');
+      li.textContent = m.name || 'Sin nombre';
+      li.style.cursor = 'pointer';
+      li.onclick = ()=>{ selectedId = m.id; drawCanvas(); showEditPane(m.id); };
+      memberList.appendChild(li);
+    });
+    startQuizBtn.disabled = !canStartQuiz();
+  }
+  function syncSpouse(id1, id2) {
+    let m1 = state.members.find(m=>m.id===id1);
+    let m2 = state.members.find(m=>m.id===id2);
+    if (!m1 || !m2) return;
+    m1.spouse = id2;
+    m2.spouse = id1;
+    let allChildren = Array.from(new Set([...(m1.children||[]), ...(m2.children||[])]));
+    m1.children = allChildren;
+    m2.children = allChildren;
+  }
+  function unsyncSpouse(id1, prevSpouse) {
+    let m1 = state.members.find(m=>m.id===id1);
+    let m2 = state.members.find(m=>m.id===prevSpouse);
+    if (!m1 || !m2) return;
+    if (m2.spouse === id1) m2.spouse = null;
+  }
+  function syncChildren(parentId, childrenIds) {
+    let parent = state.members.find(m=>m.id===parentId);
+    if (!parent) return;
+    let spouse = state.members.find(m=>m.id===parent.spouse);
+    parent.children = childrenIds.slice();
+    if (spouse) spouse.children = childrenIds.slice();
+  }
+  function showEditPane(id, focusName) {
+    if (!id) { editPane.style.display='none'; return; }
+    const m = state.members.find(x=>x.id===id);
+    if (!m) return;
+    editPane.style.display = 'block';
+    editName.value = m.name;
+    // Opciones de esposo: los que no son esposos, o el actual esposo
+    editSpouse.innerHTML = '<option value="">(Ninguno)</option>';
+    state.members.filter(x=>{
+      return x.id!==id && (!isMarried(x.id) || x.id===m.spouse);
+    }).forEach(x=>{
+      const opt = document.createElement('option');
+      opt.value = x.id;
+      opt.textContent = x.name || 'Sin nombre';
+      if (x.id === m.spouse) opt.selected = true;
+      editSpouse.appendChild(opt);
+    });
+    let spouseId = m.spouse;
+    let spouseChildren = (spouseId ? (state.members.find(x=>x.id===spouseId)?.children || []) : []);
+    let allChildren = Array.from(new Set([...(m.children||[]), ...(spouseChildren)]));
+    editChildren.innerHTML = '';
+    state.members.filter(x=>x.id!==id && x.id!==spouseId).forEach(x=>{
+      const opt = document.createElement('option');
+      opt.value = x.id;
+      opt.textContent = x.name || 'Sin nombre';
+      if (allChildren.includes(x.id)) opt.selected = true;
+      editChildren.appendChild(opt);
+    });
+    updateChildCounter();
+    editChildren.onchange = updateChildCounter;
+    editSpouse.onchange = function() {
+      let selectedSpouseId = editSpouse.value ? Number(editSpouse.value) : null;
+      if (selectedSpouseId) {
+        let spouseChildren = (state.members.find(x=>x.id===selectedSpouseId)?.children || []);
+        Array.from(editChildren.options).forEach(opt=>{
+          opt.selected = spouseChildren.includes(Number(opt.value));
+        });
+        updateChildCounter();
+      }
+    };
+    deleteMemberBtn.onclick = function() {
+      if (confirm("¿Seguro que deseas eliminar este miembro? Esta acción no se puede deshacer.")) {
+        eliminarMiembro(m.id);
+      }
+    };
+    editForm.onsubmit = function(e) {
+      e.preventDefault();
+      let prevSpouse = m.spouse;
+      m.name = editName.value.trim();
+      let newSpouse = editSpouse.value ? Number(editSpouse.value) : null;
+      if (prevSpouse && prevSpouse!==newSpouse) unsyncSpouse(m.id, prevSpouse);
+      if (newSpouse) syncSpouse(m.id, newSpouse);
+      else m.spouse = null;
+      let childrenIds = Array.from(editChildren.selectedOptions).map(o=>Number(o.value));
+      syncChildren(m.id, childrenIds);
+      saveToUrl(); drawCanvas(); renderMemberList();
+      return false;
+    };
+    if (focusName) {
+      setTimeout(()=>{editName.focus();}, 50);
+    }
+  }
+  function updateChildCounter() {
+    let selected = Array.from(editChildren.selectedOptions).length;
+    let total = editChildren.options.length;
+    childCounter.textContent = `Hijos seleccionados: ${selected} / ${total}`;
+  }
+  function eliminarMiembro(id) {
+    state.members = state.members.filter(m=>m.id!==id);
+    state.members.forEach(m=>{
+      if (m.spouse === id) m.spouse = null;
+      if (m.children && m.children.includes(id)) m.children = m.children.filter(cid=>cid!==id);
+    });
+    selectedId = null;
+    showEditPane(null);
+    saveToUrl(); drawCanvas(); renderMemberList();
+  }
+  function isMarried(id) {
+    return state.members.some(m=>m.spouse===id);
+  }
+  function shuffle(arr) {
+    let a = arr.slice();
+    for (let i = a.length-1;i>0;--i) {
+      let j = Math.floor(Math.random()*(i+1));
+      [a[i],a[j]]=[a[j],a[i]];
+    }
+    return a;
+  }
+  function canStartQuiz() {
+    if (state.members.length < 2) return false;
+    if (!state.members.every(m=>m.name && m.name.length>0)) return false;
+    const hasRelation = state.members.some(m=>(m.spouse && m.spouse!==null)||(m.children && m.children.length>0));
+    if (!hasRelation) return false;
+    return true;
+  }
+  function startQuiz() {
+    if (!canStartQuiz()) return;
+    const qs = [];
+    state.members.forEach(m=>{
+      if (m.name) {
+        qs.push({type:'who-photo', member:m.id});
+        qs.push({type:'how-many-children', member:m.id});
+        if (m.spouse) qs.push({type:'who-spouse', member:m.id});
+        if (m.children && m.children.length>0) {
+          m.children.forEach(cid=>{
+            qs.push({type:'who-parent', child:cid});
+          });
+        }
+      }
+    });
+    quiz = { questions: shuffle(qs), i:0, score:0, answers:[] };
+    showQuizModal();
+  }
+  function showQuizModal() {
+    quizModal.style.display='flex';
+    renderQuizQ();
+  }
+  function renderQuizQ() {
+    if (!quiz) return;
+    quizContent.innerHTML = '';
+    if (quiz.i >= quiz.questions.length) {
+      quizContent.innerHTML = `<h2>¡Quiz Completado!</h2>
+        <div>Puntaje: <b class="${quiz.score/quiz.questions.length>.7?'score-good':'score-bad'}">${quiz.score} / ${quiz.questions.length}</b></div>
+        <ul style="font-size:.93em;">${
+          quiz.answers.map((a,i)=>`<li>Pregunta ${i+1}: ${a.correct?'✅':'❌'} ${a.desc}</li>`).join('')
+        }</ul>
+        <button class="button" onclick="quizModal.style.display='none'">Cerrar</button>
+      `;
+      return;
+    }
+    const q = quiz.questions[quiz.i];
+    if (q.type==='who-photo') {
+      const m = state.members.find(x=>x.id===q.member);
+      let photo = cropImgToDataUrl(state.image, ...m.rect);
+      const opts = shuffle(state.members.filter(x=>x.name).map(x=>x.name)).slice(0,4);
+      if (!opts.includes(m.name)) opts[0]=m.name;
+      quizContent.innerHTML = `
+        <div class="quiz-big">¿Quién es esta persona?</div>
+        <div style="margin:1em 0; text-align:center;">
+          <img src="${photo}" class="quiz-img-big">
+        </div>
+        <div class="quiz-opt" style="text-align:center;">${
+          opts.map(n=>`<button class="button" style="font-size:1.1em" onclick="answerQuiz('${n.replace(/'/g,"\\'")}', null)">${n}</button>`).join(' ')
+        }</div>
+      `;
+      quizContent.dataset.desc = `¿Quién aparece en la foto? Correcto: ${m.name}`;
+    } else if (q.type==='how-many-children') {
+      const m = state.members.find(x=>x.id===q.member);
+      const count = m.children.length;
+      let opts = shuffle([count, count+1, Math.max(0,count-1), count+2]).slice(0,4);
+      if (!opts.includes(count)) opts[0]=count; opts = opts.filter((v,i,a)=>a.indexOf(v)===i);
+      quizContent.innerHTML = `
+        <div>¿Cuántos hijos tiene <b>${m.name}</b>?</div>
+        <div class="quiz-opt">${
+          opts.map(n=>`<button class="button" onclick="answerQuiz(${n}, null)">${n}</button>`).join(' ')
+        }</div>
+      `;
+      quizContent.dataset.desc = `¿Cuántos hijos tiene ${m.name}? Correcto: ${count}`;
+    } else if (q.type==='who-spouse') {
+      const m = state.members.find(x=>x.id===q.member);
+      const spouse = state.members.find(x=>x.id===m.spouse);
+      // Opciones: todos los miembros menos el actual, y asegurarse incluir el actual esposo
+      let opts = state.members.filter(x=>x.id!==m.id && x.name).map(x=>x.name);
+      if (spouse && !opts.includes(spouse.name)) opts.unshift(spouse.name);
+      opts = shuffle(opts).slice(0,4);
+      if (!opts.includes(spouse.name)) opts[0]=spouse.name;
+      quizContent.innerHTML = `
+        <div>¿Quién está casado con <b>${m.name}</b>?</div>
+        <div class="quiz-opt">${
+          shuffle(opts).map(n=>`<button class="button" onclick="answerQuiz('${n.replace(/'/g,"\\'")}', null)">${n}</button>`).join(' ')
+        }</div>
+      `;
+      quizContent.dataset.desc = `¿Quién está casado con ${m.name}? Correcto: ${spouse ? spouse.name : "(Ninguno)"}`;
+    } else if (q.type==='who-parent') {
+      const child = state.members.find(x=>x.id===q.child);
+      const parentIds = state.members.filter(x=>x.children && x.children.includes(child.id)).map(x=>x.id);
+      const parentNames = parentIds.map(pid=>state.members.find(x=>x.id===pid).name);
+      let opts = shuffle(state.members.filter(x=>x.name && x.id!==child.id).map(x=>({
+        id:x.id,
+        name:x.name,
+        rect:x.rect
+      })));
+      opts = opts.slice(0,4);
+      if (!opts.some(o=>o.name===parentNames[0])) opts[0]={id:parentIds[0], name:parentNames[0], rect:state.members.find(x=>x.id===parentIds[0]).rect};
+      quizContent.innerHTML = `
+        <div>¿Quién es el padre o madre de <b>${child.name}</b>?</div>
+        <div class="quiz-opt">${
+          shuffle(opts).map(o=>{
+            if (Math.random()<0.5) {
+              return `<button class="button" onclick="answerQuiz('${o.name}', ${o.id})">${o.name}</button>`;
+            } else {
+              let photo = cropImgToDataUrl(state.image, ...o.rect);
+              return `<button class="button" onclick="answerQuiz('${o.name}', ${o.id})"><img src="${photo}" alt="${o.name}" title="${o.name}"></button>`;
+            }
+          }).join(' ')
+        }</div>
+      `;
+      quizContent.dataset.desc = `¿Quién es el padre o madre de ${child.name}? Correcto: ${parentNames.join(' o ')}`;
+    }
+  }
+  window.answerQuiz = function(ans, ansId) {
+    const q = quiz.questions[quiz.i];
+    let correct = false, desc = '';
+    if (q.type==='who-photo') {
+      const m = state.members.find(x=>x.id===q.member);
+      correct = ans===m.name;
+      desc = `¿Quién aparece en la foto? Correcto: ${m.name}, Tú: ${ans}`;
+    } else if (q.type==='how-many-children') {
+      const m = state.members.find(x=>x.id===q.member);
+      correct = Number(ans)===m.children.length;
+      desc = `¿Cuántos hijos tiene ${m.name}? Correcto: ${m.children.length}, Tú: ${ans}`;
+    } else if (q.type==='who-spouse') {
+      const m = state.members.find(x=>x.id===q.member);
+      const spouse = state.members.find(x=>x.id===m.spouse);
+      correct = ans=== (spouse ? spouse.name : "");
+      desc = `¿Quién está casado con ${m.name}? Correcto: ${spouse ? spouse.name : "(Ninguno)"}, Tú: ${ans}`;
+    } else if (q.type==='who-parent') {
+      const child = state.members.find(x=>x.id===q.child);
+      const parentIds = state.members.filter(x=>x.children && x.children.includes(child.id)).map(x=>x.id);
+      const parentNames = parentIds.map(pid=>state.members.find(x=>x.id===pid).name);
+      correct = parentNames.includes(ans);
+      desc = `¿Quién es el padre o madre de ${child.name}? Correcto: ${parentNames.join(' o ')}, Tú: ${ans}`;
+    }
+    quiz.answers.push({correct, desc});
+    if (correct) quiz.score++;
+    quiz.i++;
+    renderQuizQ();
+  };
+  quizExit.onclick = ()=>{ quizModal.style.display='none'; };
+  function cropImgToDataUrl(imgSrc, x, y, w, h) {
+    const img = document.createElement('img');
+    img.src = imgSrc;
+    const cvs = document.createElement('canvas');
+    cvs.width = w; cvs.height = h;
+    const ctx = cvs.getContext('2d');
+    ctx.fillStyle='#fff';ctx.fillRect(0,0,w,h);
+    ctx.drawImage(img, x, y, w, h, 0, 0, w, h);
+    return cvs.toDataURL();
+  }
+  function init() {
+    if (loadFromUrl()) {
+      if (state.image) {
+        loadImage(state.image);
+        renderMemberList();
+      }
+    } else {
+      drawCanvas();
+    }
+    renderMemberList();
+    saveToUrl();
+  }
+  startQuizBtn.onclick = startQuiz;
+  window.onload = init;
+  </script>
+</body>
+</html>
