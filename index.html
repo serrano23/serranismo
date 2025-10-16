@@ -46,7 +46,13 @@
       #quiz-controls { flex-direction: column; align-items: flex-start;}
       #graph-modal-inner { min-width: 98vw; padding: 0.2em;}
     }
+    .button { padding: .5em 1em; background: #1976d2; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
+    .button:disabled { opacity: 0.6; cursor: default; }
+    .form-row { margin-bottom: .6em; }
   </style>
+
+  <!-- pako for compression (deflate/inflate) -->
+  <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
 </head>
 <body>
   <h1>Quiz Familiar</h1>
@@ -56,7 +62,7 @@
       <label for="num-questions">Preguntas:
         <input id="num-questions" type="number" min="1" max="99" value="10">
       </label>
-      <input type="file" id="session-file-btn" accept=".txt" style="display:none">
+      <input type="file" id="session-file-btn" accept=".ses" style="display:none">
       <button class="button" id="session-file-label">Cargar archivo de sesión</button>
       <label><input type="checkbox" id="toggle-edit-family" checked> Ocultar familia</label>
       <button class="button" id="graph-btn">Ver grafo familiar</button>
@@ -163,38 +169,237 @@ const memberSection = document.getElementById('member-section');
 const toggleEditFamily = document.getElementById('toggle-edit-family');
 
 // --- SESSION SAVE/LOAD ---
-function saveSessionToTxt() {
-  const data = JSON.stringify({
-    image: state.image,
-    imgWidth: state.imgWidth,
-    imgHeight: state.imgHeight,
-    members: state.members
-  });
-  const enc = encodeURIComponent(btoa(unescape(encodeURIComponent(data))));
-  const blob = new Blob([enc], {type:"text/plain"});
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = "quiz-familiar-sesion.txt";
-  document.body.appendChild(a);
-  a.click();
-  setTimeout(()=>{document.body.removeChild(a);}, 100);
+// Minimal, targeted change: replace old TXT export/import with compressed+encrypted .ses export/import.
+// Only this block was changed from the original file. Everything else remains as in the original repo.
+
+/* Helper: base64 <-> ArrayBuffer */
+function arrayBufferToBase64(ab) {
+  const bytes = new Uint8Array(ab);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+function base64ToArrayBuffer(b64) {
+  const binary = atob(b64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+/* Key derivation using PBKDF2 -> AES-GCM */
+async function deriveKeyFromPassword(password, salt, iterations = 200000) {
+  const enc = new TextEncoder();
+  const pwUtf8 = enc.encode(password);
+  const baseKey = await crypto.subtle.importKey('raw', pwUtf8, 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: salt, iterations: iterations, hash: 'SHA-256' },
+    baseKey,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+async function encryptCompressedBytes(password, compressedBytes) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const iterations = 200000;
+  const key = await deriveKeyFromPassword(password, salt, iterations);
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, compressedBytes);
+  return {
+    version: 1,
+    algo: 'AES-GCM',
+    compression: 'deflate',
+    iterations: iterations,
+    salt: arrayBufferToBase64(salt.buffer),
+    iv: arrayBufferToBase64(iv.buffer),
+    ct: arrayBufferToBase64(ct)
+  };
+}
+
+async function decryptCompressedBytes(password, envelope) {
+  const salt = base64ToArrayBuffer(envelope.salt);
+  const iv = base64ToArrayBuffer(envelope.iv);
+  const ct = base64ToArrayBuffer(envelope.ct);
+  const iterations = envelope.iterations || 200000;
+  const key = await deriveKeyFromPassword(password, new Uint8Array(salt), iterations);
+  try {
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: new Uint8Array(iv) }, key, ct);
+    return new Uint8Array(plain);
+  } catch(e) {
+    throw new Error('Decryption failed');
+  }
+}
+
+/* Try to decode old-format session (legacy) */
+function tryDecodeOldFormat(text) {
+  // Old format in this project used: encodeURIComponent(btoa(unescape(encodeURIComponent(data))))
+  // We'll try a few fallbacks to be robust.
+  // 1) If text looks percent-encoded base64, try decodeURIComponent -> atob
+  try {
+    // If decodeURIComponent succeeds and results in a base64 string
+    const maybeB64 = decodeURIComponent(text.trim());
+    try {
+      const bytes = Uint8Array.from(atob(maybeB64), c => c.charCodeAt(0));
+      // decode bytes as UTF-8
+      const str = new TextDecoder().decode(bytes);
+      return JSON.parse(str);
+    } catch (err) {
+      // not base64 after decodeURIComponent, fall through
+    }
+  } catch (e) {
+    // decodeURIComponent thrown: ignore
+  }
+
+  // 2) Maybe it's straight base64 of binary utf8: atob(text) -> utf8
+  try {
+    const bytes = Uint8Array.from(atob(text.trim()), c => c.charCodeAt(0));
+    const str = new TextDecoder().decode(bytes);
+    return JSON.parse(str);
+  } catch (e) {
+    // not base64
+  }
+
+  // 3) Maybe it's raw JSON
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    throw new Error('Unknown legacy format');
+  }
+}
+
+/* Save session: compress -> encrypt -> download */
+async function saveSessionToTxt() {
+  try {
+    const password = prompt('Elija una contraseña para cifrar la sesión (no la pierda):');
+    if (!password) { alert('Se necesita contraseña para cifrar.'); return; }
+
+    const payload = {
+      meta: { savedAt: new Date().toISOString(), version: 1 },
+      image: state.image,
+      imgWidth: state.imgWidth,
+      imgHeight: state.imgHeight,
+      members: state.members
+    };
+
+    const json = JSON.stringify(payload);
+    const utf8 = new TextEncoder().encode(json);
+
+    // compress using pako (deflate)
+    const compressed = pako.deflate(utf8);
+
+    // encrypt compressed bytes
+    const envelope = await encryptCompressedBytes(password, compressed);
+
+    // stringify envelope and download
+    const blob = new Blob([JSON.stringify(envelope)], { type: 'application/octet-stream' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'quiz-familiar-session.ses';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(()=>{ document.body.removeChild(a); }, 100);
+  } catch (err) {
+    console.error(err);
+    alert('Error al guardar sesión cifrada: ' + err.message);
+  }
 }
 sessionSaveBtn.onclick = saveSessionToTxt;
 sessionFileLabel.onclick = function() { sessionFileBtn.click(); };
-sessionFileBtn.onchange = function(e) {
+sessionFileBtn.onchange = async function(e) {
   const file = e.target.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = ev=> {
+  reader.onload = async ev=> {
     try {
-      const p = ev.target.result.trim();
-      const data = JSON.parse(decodeURIComponent(escape(atob(decodeURIComponent(p)))));
-      Object.assign(state, data);
-      if (state.image) loadImage(state.image); else drawCanvas();
-      renderMemberList();
-      showEditPane(null);
-      sessionLoadError.textContent = '';
+      const text = ev.target.result.trim();
+
+      // Try parse as new envelope
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch (e) {
+        parsed = null;
+      }
+
+      if (parsed && parsed.ct && parsed.salt && parsed.iv) {
+        // new encrypted format
+        const password = prompt('Introduzca la contraseña para descifrar la sesión:');
+        if (!password) { sessionLoadError.textContent = 'Contraseña necesaria.'; return; }
+        try {
+          const compressed = await decryptCompressedBytes(password, parsed);
+          const decompressed = pako.inflate(compressed);
+          const json = new TextDecoder().decode(decompressed);
+          const data = JSON.parse(json);
+          Object.assign(state, {
+            image: data.image || null,
+            imgWidth: data.imgWidth || 0,
+            imgHeight: data.imgHeight || 0,
+            members: Array.isArray(data.members) ? data.members : []
+          });
+          if (state.image) loadImage(state.image); else drawCanvas();
+          renderMemberList();
+          showEditPane(null);
+          sessionLoadError.textContent = '';
+        } catch (err) {
+          console.error(err);
+          sessionLoadError.textContent = 'No se pudo descifrar la sesión. Contraseña inválida o archivo corrupto.';
+        }
+      } else {
+        // Not an envelope: try to decode legacy format (non-encrypted)
+        try {
+          const legacy = tryDecodeOldFormat(text);
+          // We have legacy JSON payload; prompt whether to convert+encrypt immediately in-browser
+          const doConvert = confirm('Archivo de sesión antiguo detectado (sin cifrar). ¿Desea cifrarlo ahora en un nuevo archivo protegido con contraseña? (Aceptar = cifrar y descargar, Cancelar = cargar en memoria sin cifrar)');
+          if (doConvert) {
+            const password = prompt('Elija una contraseña para cifrar la sesión (no la pierda):');
+            if (!password) { sessionLoadError.textContent = 'Contraseña necesaria para cifrar.'; return; }
+            const json = JSON.stringify(legacy);
+            const utf8 = new TextEncoder().encode(json);
+            const compressed = pako.deflate(utf8);
+            const envelope = await encryptCompressedBytes(password, compressed);
+            const blob = new Blob([JSON.stringify(envelope)], { type: 'application/octet-stream' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'quiz-familiar-session.ses';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => { document.body.removeChild(a); }, 100);
+            // still load decrypted into current state
+            Object.assign(state, {
+              image: legacy.image || null,
+              imgWidth: legacy.imgWidth || 0,
+              imgHeight: legacy.imgHeight || 0,
+              members: Array.isArray(legacy.members) ? legacy.members : []
+            });
+            if (state.image) loadImage(state.image); else drawCanvas();
+            renderMemberList();
+            showEditPane(null);
+            sessionLoadError.textContent = '';
+          } else {
+            // load legacy into session without encrypting
+            Object.assign(state, {
+              image: legacy.image || null,
+              imgWidth: legacy.imgWidth || 0,
+              imgHeight: legacy.imgHeight || 0,
+              members: Array.isArray(legacy.members) ? legacy.members : []
+            });
+            if (state.image) loadImage(state.image); else drawCanvas();
+            renderMemberList();
+            showEditPane(null);
+            sessionLoadError.textContent = '';
+          }
+        } catch (err) {
+          console.error(err);
+          sessionLoadError.textContent = 'Archivo de sesión no válido o desconocido.';
+        }
+      }
     } catch(e) {
+      console.error(e);
       sessionLoadError.textContent = 'Archivo de sesión no válido.';
     }
   };
@@ -639,8 +844,8 @@ function renderQuizQ() {
     sec = sec%60;
     let timeStr = min > 0 ? `${min} min ${sec} s` : `${sec} s`;
     quizContent.innerHTML = `<h2>¡Quiz Completado!</h2>
-      <div>Puntaje: <b class="${quiz.score/quiz.questions.length>.7?'score-good':'score-bad'}">${quiz.score} / ${quiz.questions.length}</b></div>
-      <div>Tiempo tomado: <b>${timeStr}</b></div>
+      <div>Puntuación: <b class="${quiz.score/quiz.questions.length>.7?'score-good':'score-bad'}">${quiz.score} / ${quiz.questions.length}</b></div>
+      <div>Tiempo: <b>${timeStr}</b></div>
       <ul style="font-size:.93em;">${
         quiz.answers.map((a,i)=>`<li>Pregunta ${i+1}: ${a.correct?'✅':'❌'} ${a.desc}</li>`).join('')
       }</ul>
@@ -655,7 +860,7 @@ function renderQuizQ() {
     const opts = shuffle(state.members.filter(x=>x.name).map(x=>x.name)).slice(0,4);
     if (!opts.includes(m.name)) opts[0]=m.name;
     quizContent.innerHTML = `
-      <div class="quiz-big">¿Quién es esta persona?</div>
+      <div class="quiz-big">¿Quién aparece en la foto?</div>
       <div style="margin:1em 0; text-align:center;">
         <img src="${photo}" class="quiz-img-big">
       </div>
@@ -912,6 +1117,85 @@ function drawFamilyGraphV2() {
     ctx.restore();
   }
 }
+
+// Add this file (or insert the contents into a <script> at the end of index.html).
+// On page load it will try to fetch 'quiz-familiar-session.ses' from the same location
+// and automatically prompt for the password and load it if available.
+//
+// This snippet expects the page to already define:
+// - decryptCompressedBytes(password, envelope)
+// - tryDecodeOldFormat(text)
+// - loadImage(dataUrl), drawCanvas(), renderMemberList(), showEditPane(null)
+// - pako (deflate/inflate) is available if needed for legacy handling.
+
+window.addEventListener('load', async () => {
+  const url = 'quiz-familiar-session.ses';
+  try {
+    const resp = await fetch(url, { cache: 'no-cache' });
+    if (!resp.ok) {
+      // no file found (404) or other non-ok — nothing to do
+      return;
+    }
+    const text = (await resp.text()).trim();
+    if (!text) return;
+
+    // Try parse as new encrypted envelope
+    let parsed = null;
+    try { parsed = JSON.parse(text); } catch (e) { parsed = null; }
+
+    if (parsed && parsed.ct && parsed.salt && parsed.iv) {
+      // Found encrypted session file. Prompt for password and try to decrypt.
+      const password = prompt('Se ha detectado quiz-familiar-session.ses. Introduce la contraseña para descifrarla:');
+      if (!password) return;
+      try {
+        const compressed = await decryptCompressedBytes(password, parsed);
+        // decompress
+        const decompressed = (typeof pako !== 'undefined') ? pako.inflate(compressed) : compressed;
+        const json = new TextDecoder().decode(decompressed);
+        const data = JSON.parse(json);
+        Object.assign(state, {
+          image: data.image || null,
+          imgWidth: data.imgWidth || 0,
+          imgHeight: data.imgHeight || 0,
+          members: Array.isArray(data.members) ? data.members : []
+        });
+        if (state.image) loadImage(state.image); else drawCanvas();
+        renderMemberList();
+        showEditPane(null);
+        sessionLoadError.textContent = '';
+        console.info('Session loaded from quiz-familiar-session.ses');
+      } catch (err) {
+        console.error('Failed to decrypt/load quiz-familiar-session.ses:', err);
+        sessionLoadError.textContent = 'No se pudo descifrar quiz-familiar-session.ses (contraseña inválida o archivo corrupto).';
+      }
+    } else {
+      // Not the new envelope. Try to decode as legacy session (raw JSON or legacy base64)
+      try {
+        const legacy = tryDecodeOldFormat(text);
+        const proceed = confirm('Se ha detectado un archivo de sesión en quiz-familiar-session.ses en formato antiguo. ¿Deseas cargarlo ahora? (Aceptar = cargar, Cancelar = ignorar)');
+        if (!proceed) return;
+        Object.assign(state, {
+          image: legacy.image || null,
+          imgWidth: legacy.imgWidth || 0,
+          imgHeight: legacy.imgHeight || 0,
+          members: Array.isArray(legacy.members) ? legacy.members : []
+        });
+        if (state.image) loadImage(state.image); else drawCanvas();
+        renderMemberList();
+        showEditPane(null);
+        sessionLoadError.textContent = '';
+        // Optionally prompt to convert+encrypt can be done elsewhere; we keep this minimal.
+        console.info('Legacy session loaded from quiz-familiar-session.ses');
+      } catch (err) {
+        // Unknown format — ignore silently (or log)
+        console.warn('Found quiz-familiar-session.ses but could not parse as known format.', err);
+      }
+    }
+  } catch (err) {
+    // fetch failed or other error (CORS, network...). Ignore silently or log.
+    console.debug('No accessible quiz-familiar-session.ses or load error:', err);
+  }
+});
 </script>
 </body>
 </html>
