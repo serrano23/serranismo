@@ -5,74 +5,133 @@
   <title>Quiz Familiar</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <style>
-    body { font-family: sans-serif; background: #f7f7f7; margin: 0; padding: 2em; }
-    .container { display: flex; gap: 2em; align-items: flex-start; }
-    .canvas-wrap { position: relative; border: 2px solid #ccc; }
-    #main-canvas { display: block; cursor: crosshair; background: #fff; }
-    .handle { position: absolute; width: 12px; height: 12px; background: #fff; border: 2px solid #1976d2; border-radius: 3px; z-index: 3; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; margin: 0; padding: 0; }
+    
+    /* Header */
+    .app-header { background: #1976d2; color: #fff; padding: 1rem 1.2rem; text-align: center; position: sticky; top: 0; z-index: 100; box-shadow: 0 2px 8px rgba(0,0,0,.15); }
+    .app-header h1 { margin: 0; font-size: 1.4rem; font-weight: 600; }
+    
+    /* Main actions */
+    .actions-bar { padding: 1rem; display: flex; flex-wrap: wrap; gap: .5rem; justify-content: center; background: #fff; border-bottom: 1px solid #e0e0e0; }
+    .button { padding: .7em 1.2em; background: #1976d2; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: .95rem; font-weight: 500; transition: background .15s; -webkit-tap-highlight-color: transparent; }
+    .button:active { background: #1256a0; }
+    .button:disabled { opacity: 0.5; cursor: default; }
+    .button--primary { background: #2e7d32; font-size: 1.1rem; padding: .8em 1.5em; }
+    .button--primary:active { background: #1b5e20; }
+    .button--subtle { background: #546e7a; font-size: .85rem; }
+    .button--danger { background: #c62828; }
+    #num-questions { width: 3.5em; text-align: center; font-size: 1rem; border: 2px solid #ccc; border-radius: 6px; padding: .3em; }
+    #session-load-error { color: #c62828; font-size: .85rem; padding: 0 1rem; }
+    
+    /* Quiz section (inline, not modal) */
+    #quiz-section { display: none; padding: 1.5rem 1rem; max-width: 500px; margin: 0 auto; }
+    #quiz-section.active { display: block; }
+    .quiz-progress { text-align: center; font-size: .85rem; color: #666; margin-bottom: 1rem; }
+    .quiz-progress-bar { height: 4px; background: #e0e0e0; border-radius: 2px; overflow: hidden; margin-bottom: 1rem; }
+    .quiz-progress-bar-fill { height: 100%; background: #1976d2; transition: width .3s ease; }
+    .quiz-question { font-size: 1.2rem; font-weight: 600; text-align: center; margin-bottom: 1.2rem; color: #222; }
+    .quiz-photo-wrap { text-align: center; margin-bottom: 1.2rem; }
+    .quiz-img-big { width: 140px; height: 140px; border-radius: 12px; object-fit: cover; box-shadow: 0 4px 12px rgba(0,0,0,.12); }
+    .quiz-options { display: grid; grid-template-columns: 1fr 1fr; gap: .7rem; }
+    .quiz-opt-btn { padding: 1em .8em; font-size: 1rem; font-weight: 500; background: #fff; color: #333; border: 2px solid #e0e0e0; border-radius: 10px; cursor: pointer; transition: all .15s; text-align: center; -webkit-tap-highlight-color: transparent; }
+    .quiz-opt-btn:active { background: #e3f2fd; border-color: #1976d2; }
+    .quiz-opt-btn img { width: 64px; height: 64px; border-radius: 8px; object-fit: cover; display: block; margin: 0 auto .4em; }
+    .quiz-exit-wrap { text-align: center; margin-top: 1.5rem; }
+    
+    /* Quiz results */
+    .quiz-results { text-align: center; padding: 1rem; }
+    .quiz-results h2 { color: #1976d2; margin-bottom: .5rem; }
+    .quiz-score { font-size: 2.5rem; font-weight: 700; margin: .5rem 0; }
+    .quiz-time { font-size: 1rem; color: #666; margin-bottom: 1rem; }
+    .quiz-answers-list { text-align: left; font-size: .9rem; list-style: none; padding: 0; max-height: 40vh; overflow-y: auto; }
+    .quiz-answers-list li { padding: .5em .8em; margin-bottom: .3em; border-radius: 6px; background: #f9f9f9; }
+    .quiz-answers-list li.correct { background: #e8f5e9; }
+    .quiz-answers-list li.wrong { background: #ffebee; }
+    .score-good { color: #2e7d32; }
+    .score-bad { color: #c62828; }
+    
+    /* Family editor (collapsed) */
+    .editor-section { margin: 0 auto; max-width: 700px; padding: 0 1rem 2rem; }
+    .editor-toggle { width: 100%; padding: 1rem; font-size: 1rem; font-weight: 500; background: #fff; border: 1px solid #e0e0e0; border-radius: 10px; cursor: pointer; text-align: left; margin-top: 1rem; color: #444; }
+    .editor-toggle::after { content: ' \25b8'; float: right; }
+    .editor-toggle.open::after { content: ' \25be'; }
+    .editor-content { display: none; background: #fff; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 10px 10px; padding: 1rem; }
+    .editor-content.open { display: block; }
+    
+    .canvas-wrap { position: relative; border: 2px solid #ccc; border-radius: 8px; overflow: hidden; margin-bottom: 1rem; }
+    #main-canvas { display: block; cursor: crosshair; background: #fff; max-width: 100%; height: auto; }
+    .handle { position: absolute; width: 14px; height: 14px; background: #fff; border: 2px solid #1976d2; border-radius: 3px; z-index: 3; }
     .handle:hover { background: #1976d2; }
-    .member-col { display: flex; flex-direction: column; min-width: 260px; }
-    #edit-pane { background: #fff; padding: 1em; border-radius: 8px; box-shadow: 0 2px 8px #0001; margin-bottom: 1em; }
-    #edit-pane h3 { margin-top: 0;}
-    .form-row { display: block; margin-bottom: 1em; }
-    .member-list { background: #fff; padding: 1em; border-radius: 8px; box-shadow: 0 2px 8px #0001;}
-    .member-list h2 { margin-top: 0; }
-    .member-list ul { padding-left: 1.2em; }
-    .member-list li { margin-bottom: .5em;}
-    .button { padding: .4em 1em; margin: .2em 0; border: none; border-radius: 4px; background: #1976d2; color: #fff; cursor: pointer;}
-    .button:disabled { background: #aaa; }
-    .score-good { color: green;}
-    .score-bad { color: red;}
-    .child-count { background: #e3f2fd; color: #1976d2; padding: 2px 8px; border-radius: 10px; display: inline-block; margin-bottom: 5px; font-size: 1em; }
-    #quiz-modal { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; background: rgba(40,40,60,.92); display: none; align-items:center; justify-content:center; z-index: 1000;}
-    #quiz-modal>div { background: #fff; padding: 2em; border-radius: 10px; min-width: 320px;}
-    .quiz-big { font-size: 2.1em; font-weight: bold; margin-bottom: 1em; }
-    .quiz-img-big { width: 160px !important; height: 160px !important; border-radius: 10px; }
-    .quiz-opt { margin: 1em 0; }
-    .quiz-opt img { width: 80px; height: 80px; border-radius: 8px; margin: 0 0.5em; vertical-align: middle; object-fit: cover; }
-    .session-controls { margin-bottom:1em; }
-    #session-load-error { color:#b71c1c; font-size:.9em; margin-top: .3em;}
-    #quiz-controls { display: flex; gap: 1em; align-items: center; margin-bottom: 1.5em;}
-    #num-questions { width: 3em; text-align: center; }
-    #edit-family-row { display: flex; align-items: center; gap:1em; margin-bottom: 1em;}
-    #graph-btn { margin-right: .6em; }
-    #graph-modal { display:none; position:fixed; left:0; top:0; width:100vw; height:100vh; z-index:1200; background:rgba(40,40,60,0.92); align-items:center; justify-content:center;}
-    #graph-modal-inner { background:#fff; border-radius:14px; padding:2em; min-width:820px; min-height:420px; position:relative; max-width:96vw; max-height:90vh;}
-    #graph-canvas { background:#f8f9fa; display:block; margin:0 auto; border-radius:12px;}
-    @media (max-width:1000px) {
-      .container { flex-direction: column; }
-      .member-col { min-width: 0; }
-      #edit-pane { margin-bottom: 1em;}
-      #quiz-controls { flex-direction: column; align-items: flex-start;}
-      #graph-modal-inner { min-width: 98vw; padding: 0.2em;}
-    }
-    .button { padding: .5em 1em; background: #1976d2; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
-    .button:disabled { opacity: 0.6; cursor: default; }
+    
+    #edit-pane { background: #f8f9fa; padding: 1em; border-radius: 8px; margin-bottom: 1em; }
+    #edit-pane h3 { margin-top: 0; font-size: 1rem; }
     .form-row { margin-bottom: .6em; }
+    .form-row label { font-size: .9rem; }
+    .form-row input, .form-row select { font-size: 1rem; width: 100%; padding: .4em; border: 1px solid #ccc; border-radius: 6px; }
+    .member-list { background: #f8f9fa; padding: 1em; border-radius: 8px; }
+    .member-list h2 { margin-top: 0; font-size: 1rem; }
+    .member-list ul { padding-left: 1.2em; }
+    .member-list li { margin-bottom: .5em; cursor: pointer; }
+    .child-count { background: #e3f2fd; color: #1976d2; padding: 2px 8px; border-radius: 10px; display: inline-block; font-size: .9em; }
+    
+    /* Graph modal (keep as overlay since it's canvas-based) */
+    #graph-modal { display:none; position:fixed; left:0; top:0; width:100vw; height:100vh; z-index:1200; background:rgba(40,40,60,0.92); align-items:center; justify-content:center; }
+    #graph-modal-inner { background:#fff; border-radius:14px; padding:1.5em; position:relative; max-width:96vw; max-height:90vh; overflow:auto; width:920px; }
+    #graph-canvas { background:#f8f9fa; display:block; margin:0 auto; border-radius:12px; max-width:100%; }
+    
+    /* Desktop tweaks */
+    @media (min-width: 768px) {
+      body { padding: 0; }
+      .app-header h1 { font-size: 1.6rem; }
+      #quiz-section { padding: 2rem; max-width: 560px; }
+      .quiz-img-big { width: 180px; height: 180px; }
+      .quiz-options { gap: 1rem; }
+      .quiz-opt-btn { padding: 1.2em 1em; font-size: 1.05rem; }
+      .editor-section { max-width: 900px; }
+      .editor-content.open { display: flex; gap: 1.5em; flex-wrap: wrap; }
+      .canvas-wrap { flex: 1; min-width: 300px; }
+      .member-col { flex: 1; min-width: 260px; }
+    }
   </style>
 
   <!-- pako for compression (deflate/inflate) -->
   <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
 </head>
 <body>
+<header class="app-header">
   <h1>Quiz Familiar</h1>
-  <div id="quiz-controls">
-    <div id="edit-family-row">
-      <button class="button" id="start-quiz" disabled>Iniciar Quiz</button>
-      <label for="num-questions">Preguntas:
-        <input id="num-questions" type="number" min="1" max="99" value="10">
-      </label>
-      <input type="file" id="session-file-btn" accept=".ses" style="display:none">
-      <button class="button" id="session-file-label">Cargar archivo de sesión</button>
-      <label><input type="checkbox" id="toggle-edit-family" checked> Ocultar familia</label>
-      <button class="button" id="graph-btn">Ver grafo familiar</button>
-      <button class="button" id="session-save-btn">Descargar sesión</button>
-    </div>
-    <span id="session-load-error"></span>
+</header>
+
+<div class="actions-bar">
+  <button class="button button--primary" id="start-quiz" disabled>▶ Iniciar Quiz</button>
+  <label for="num-questions" style="display:flex;align-items:center;gap:.3em;font-size:.9rem;">
+    <input id="num-questions" type="number" min="1" max="99" value="10">
+    preguntas
+  </label>
+  <input type="file" id="session-file-btn" accept=".ses" style="display:none">
+  <button class="button button--subtle" id="session-file-label">📂 Cargar sesión</button>
+  <button class="button button--subtle" id="session-save-btn">💾 Guardar</button>
+  <button class="button button--subtle" id="graph-btn">🌳 Grafo</button>
+</div>
+<div id="session-load-error"></div>
+
+<!-- Quiz Section (inline, replaces modal) -->
+<section id="quiz-section" role="region" aria-label="Quiz">
+  <div class="quiz-progress-bar"><div class="quiz-progress-bar-fill" id="quiz-progress-fill"></div></div>
+  <div class="quiz-progress" id="quiz-progress-text"></div>
+  <div id="quiz-content"></div>
+  <div class="quiz-exit-wrap">
+    <button class="button button--subtle" id="quiz-exit">✕ Salir del Quiz</button>
   </div>
-  <div class="container">
+</section>
+
+<!-- Family Editor (collapsed) -->
+<div class="editor-section">
+  <button class="editor-toggle" id="editor-toggle">✏️ Editar familia</button>
+  <div class="editor-content" id="editor-content">
     <div class="canvas-wrap" id="canvas-section" style="position:relative;">
-      <label for="img-input" style="font-size:1em;">Subir imagen familiar: <input type="file" id="img-input" accept="image/*"></label>
+      <label for="img-input" style="font-size:.9em;display:block;margin-bottom:.5em;">Subir imagen: <input type="file" id="img-input" accept="image/*"></label>
       <canvas id="main-canvas" width="400" height="300"></canvas>
       <div id="handles-layer" style="position:absolute;top:0;left:0;z-index:3;pointer-events:none;"></div>
     </div>
@@ -97,12 +156,12 @@
           </div>
           <div class="form-row">
             <label>Hijos:<br>
-              <select id="edit-children" multiple size="6"></select>
+              <select id="edit-children" multiple size="5"></select>
             </label>
           </div>
-          <div style="margin-top:1em; display:flex; gap:1em;">
+          <div style="margin-top:1em; display:flex; gap:.5em; flex-wrap:wrap;">
             <button type="submit" class="button">Guardar</button>
-            <button type="button" class="button" id="delete-member" style="background:#b71c1c;">Eliminar miembro</button>
+            <button type="button" class="button button--danger" id="delete-member">Eliminar</button>
           </div>
         </form>
       </div>
@@ -112,22 +171,15 @@
       </div>
     </div>
   </div>
-  <!-- Quiz Modal -->
-  <div id="quiz-modal">
-    <div>
-      <div id="quiz-content"></div>
-      <div style="margin-top:1em;">
-        <button class="button" id="quiz-exit" style="background:#aaa;">Salir</button>
-      </div>
-    </div>
+</div>
+
+<!-- Grafo Modal (kept as overlay) -->
+<div id="graph-modal" role="dialog" aria-modal="true" aria-label="Grafo familiar">
+  <div id="graph-modal-inner">
+    <button class="button" id="graph-close-btn" style="position:absolute; right:.8em; top:.8em;">✕</button>
+    <canvas id="graph-canvas" width="900" height="600"></canvas>
   </div>
-  <!-- Grafo Modal -->
-  <div id="graph-modal">
-    <div id="graph-modal-inner">
-      <button class="button" id="graph-close-btn" style="position:absolute; right:1em; top:1em;">Cerrar</button>
-      <canvas id="graph-canvas" width="900" height="600"></canvas>
-    </div>
-  </div>
+</div>
 <script>
 let state = {
   image: null, imgWidth: 0, imgHeight: 0,
@@ -138,6 +190,12 @@ let drawing = false, startPt = null, tempRect = null;
 let resizing = false, moving = false, resizeDir = null, moveOffset = null;
 let quiz = null;
 let quizStartTime = 0, quizEndTime = 0;
+let cachedImg = null;
+let rafId = null;
+
+function escapeHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
 
 // DOM
 const imgInput = document.getElementById('img-input');
@@ -152,9 +210,11 @@ const editChildren = document.getElementById('edit-children');
 const childCounter = document.getElementById('child-counter');
 const deleteMemberBtn = document.getElementById('delete-member');
 const handlesLayer = document.getElementById('handles-layer');
-const quizModal = document.getElementById('quiz-modal');
+const quizSection = document.getElementById('quiz-section');
 const quizContent = document.getElementById('quiz-content');
 const quizExit = document.getElementById('quiz-exit');
+const quizProgressFill = document.getElementById('quiz-progress-fill');
+const quizProgressText = document.getElementById('quiz-progress-text');
 const sessionSaveBtn = document.getElementById('session-save-btn');
 const sessionFileBtn = document.getElementById('session-file-btn');
 const sessionFileLabel = document.getElementById('session-file-label');
@@ -166,7 +226,8 @@ const graphCanvas = document.getElementById('graph-canvas');
 const graphCloseBtn = document.getElementById('graph-close-btn');
 const canvasSection = document.getElementById('canvas-section');
 const memberSection = document.getElementById('member-section');
-const toggleEditFamily = document.getElementById('toggle-edit-family');
+const editorToggleBtn = document.getElementById('editor-toggle');
+const editorContent = document.getElementById('editor-content');
 
 // --- SESSION SAVE/LOAD ---
 // Minimal, targeted change: replace old TXT export/import with compressed+encrypted .ses export/import.
@@ -302,7 +363,7 @@ async function saveSessionToTxt() {
     a.download = 'quiz-familiar-session.ses';
     document.body.appendChild(a);
     a.click();
-    setTimeout(()=>{ document.body.removeChild(a); }, 100);
+    setTimeout(()=>{ URL.revokeObjectURL(a.href); document.body.removeChild(a); }, 100);
   } catch (err) {
     console.error(err);
     alert('Error al guardar sesión cifrada: ' + err.message);
@@ -368,7 +429,7 @@ sessionFileBtn.onchange = async function(e) {
             a.download = 'quiz-familiar-session.ses';
             document.body.appendChild(a);
             a.click();
-            setTimeout(() => { document.body.removeChild(a); }, 100);
+            setTimeout(() => { URL.revokeObjectURL(a.href); document.body.removeChild(a); }, 100);
             // still load decrypted into current state
             Object.assign(state, {
               image: legacy.image || null,
@@ -406,19 +467,10 @@ sessionFileBtn.onchange = async function(e) {
   reader.readAsText(file);
 };
 
-// --- FAMILY EDIT TOGGLE ---
-function setEditFamily(checked) {
-  if (checked) {
-    canvasSection.style.display = "none";
-    memberSection.style.display = "none";
-  } else {
-    canvasSection.style.display = "";
-    memberSection.style.display = "";
-  }
-}
-setEditFamily(toggleEditFamily.checked);
-toggleEditFamily.onchange = function() {
-  setEditFamily(this.checked);
+// --- EDITOR TOGGLE ---
+editorToggleBtn.onclick = function() {
+  editorToggleBtn.classList.toggle('open');
+  editorContent.classList.toggle('open');
 };
 
 // --- IMAGE HANDLING ---
@@ -429,8 +481,7 @@ function loadImage(dataUrl) {
     state.imgHeight = img.height;
     canvas.width = img.width;
     canvas.height = img.height;
-    handlesLayer.style.width = img.width+"px";
-    handlesLayer.style.height = img.height+"px";
+    cachedImg = img;
     drawCanvas();
   };
   img.src = dataUrl;
@@ -438,30 +489,26 @@ function loadImage(dataUrl) {
 function drawCanvas() {
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0,0,canvas.width,canvas.height);
-  if (state.image) {
-    const img = new window.Image();
-    img.onload = () => {
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      state.members.forEach(m=>{
-        ctx.strokeStyle = (m.id === selectedId) ? '#1976d2' : '#d32f2f';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(...m.rect);
-        if(m.name){
-          ctx.fillStyle = 'rgba(25,118,210,0.85)';
-          ctx.font = '13px sans-serif';
-          ctx.fillText(m.name, m.rect[0]+2, m.rect[1]+14);
-        }
-      });
-      if (tempRect) {
-        ctx.strokeStyle = 'deepskyblue';
-        ctx.lineWidth = 2;
-        ctx.setLineDash([6, 4]);
-        ctx.strokeRect(...tempRect);
-        ctx.setLineDash([]);
+  if (state.image && cachedImg) {
+    ctx.drawImage(cachedImg, 0, 0, canvas.width, canvas.height);
+    state.members.forEach(m=>{
+      ctx.strokeStyle = (m.id === selectedId) ? '#1976d2' : '#d32f2f';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(...m.rect);
+      if(m.name){
+        ctx.fillStyle = 'rgba(25,118,210,0.85)';
+        ctx.font = '13px sans-serif';
+        ctx.fillText(m.name, m.rect[0]+2, m.rect[1]+14);
       }
-    };
-    img.src = state.image;
-  } else {
+    });
+    if (tempRect) {
+      ctx.strokeStyle = 'deepskyblue';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.strokeRect(...tempRect);
+      ctx.setLineDash([]);
+    }
+  } else if (!state.image) {
     ctx.fillStyle = '#eee'; ctx.fillRect(0,0,canvas.width,canvas.height);
     ctx.fillStyle = '#888';
     ctx.font = '24px sans-serif';
@@ -482,10 +529,18 @@ imgInput.onchange = function(e) {
   };
   reader.readAsDataURL(file);
 };
+function canvasCoords(e) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  return {
+    x: Math.round((e.clientX - rect.left) * scaleX),
+    y: Math.round((e.clientY - rect.top) * scaleY)
+  };
+}
 canvas.addEventListener('mousedown', function(e) {
   if (!state.image) return;
-  const rect = canvas.getBoundingClientRect();
-  const mx = Math.round(e.clientX-rect.left), my = Math.round(e.clientY-rect.top);
+  const {x: mx, y: my} = canvasCoords(e);
   let found = false;
   for (let m of state.members) {
     let [x,y,w,h] = m.rect;
@@ -507,13 +562,12 @@ canvas.addEventListener('mousedown', function(e) {
   }
 });
 canvas.addEventListener('mousemove', function(e) {
-  if (!state.image || !drawing) return;
-  const rect = canvas.getBoundingClientRect();
-  const curPt = {x: Math.round(e.clientX-rect.left), y: Math.round(e.clientY-rect.top)};
+if (!state.image || !drawing) return;
+const curPt = canvasCoords(e);
   let x = Math.min(startPt.x, curPt.x), y = Math.min(startPt.y, curPt.y);
   let w = Math.abs(startPt.x-curPt.x), h = Math.abs(startPt.y-curPt.y);
   tempRect = [x, y, w, h];
-  drawCanvas();
+  if (!rafId) rafId = requestAnimationFrame(()=>{ rafId = null; drawCanvas(); });
 });
 canvas.addEventListener('mouseup', function(e) {
   if (!state.image || !drawing) return;
@@ -531,12 +585,37 @@ canvas.addEventListener('mouseup', function(e) {
 canvas.addEventListener('mouseleave', function() {
   if (drawing) { drawing = false; tempRect = null; drawCanvas(); }
 });
+canvas.addEventListener('touchstart', function(e) {
+  if (!state.image) return;
+  e.preventDefault();
+  const t = e.touches[0];
+  canvas.dispatchEvent(new MouseEvent('mousedown', {clientX:t.clientX, clientY:t.clientY}));
+}, {passive:false});
+canvas.addEventListener('touchmove', function(e) {
+  if (!state.image) return;
+  e.preventDefault();
+  const t = e.touches[0];
+  canvas.dispatchEvent(new MouseEvent('mousemove', {clientX:t.clientX, clientY:t.clientY}));
+}, {passive:false});
+canvas.addEventListener('touchend', function(e) {
+  if (!state.image) return;
+  e.preventDefault();
+  canvas.dispatchEvent(new MouseEvent('mouseup', {clientX:0, clientY:0}));
+}, {passive:false});
 function drawHandles() {
   handlesLayer.innerHTML = '';
   if (!selectedId) return;
-  let m = state.members.find(m=>m.id===selectedId);
+  let m = state.members.find(x=>x.id===selectedId);
   if (!m) return;
   let [x,y,w,h] = m.rect;
+  // Scale from canvas internal coords to CSS-rendered coords
+  const rect = canvas.getBoundingClientRect();
+  const sx = rect.width / canvas.width;
+  const sy = rect.height / canvas.height;
+  handlesLayer.style.width = rect.width+"px";
+  handlesLayer.style.height = rect.height+"px";
+  handlesLayer.style.top = canvas.offsetTop+"px";
+  handlesLayer.style.left = canvas.offsetLeft+"px";
   let points = [
     {x: x, y: y, dir:"nw"}, {x: x+w/2, y: y, dir:"n"}, {x: x+w, y: y, dir:"ne"},
     {x: x+w, y: y+h/2, dir:"e"}, {x: x+w, y: y+h, dir:"se"},
@@ -545,21 +624,23 @@ function drawHandles() {
   for (const p of points) {
     let div = document.createElement('div');
     div.className = "handle";
-    div.style.left = (Math.round(p.x)-6)+"px";
-    div.style.top  = (Math.round(p.y)-6)+"px";
+    div.style.left = (Math.round(p.x*sx)-7)+"px";
+    div.style.top  = (Math.round(p.y*sy)-7)+"px";
     div.style.cursor = cursorForDir(p.dir);
     div.style.pointerEvents = "all";
     div.onmousedown = handleResizeStart(p.dir);
+    div.ontouchstart = function(e){ e.preventDefault(); handleResizeStart(p.dir)(e.touches[0]); };
     handlesLayer.appendChild(div);
   }
   let moveDiv = document.createElement('div');
   moveDiv.style.position = "absolute";
-  moveDiv.style.left = Math.round(x)+"px"; moveDiv.style.top = Math.round(y)+"px";
-  moveDiv.style.width = Math.round(w)+"px"; moveDiv.style.height = Math.round(h)+"px";
+  moveDiv.style.left = Math.round(x*sx)+"px"; moveDiv.style.top = Math.round(y*sy)+"px";
+  moveDiv.style.width = Math.round(w*sx)+"px"; moveDiv.style.height = Math.round(h*sy)+"px";
   moveDiv.style.cursor = "move";
   moveDiv.style.background = "rgba(0,0,0,0)";
   moveDiv.style.pointerEvents = "all";
   moveDiv.onmousedown = handleMoveStart(x, y, w, h);
+  moveDiv.ontouchstart = function(e){ e.preventDefault(); handleMoveStart(x, y, w, h)(e.touches[0]); };
   handlesLayer.appendChild(moveDiv);
 }
 function cursorForDir(dir) {
@@ -576,14 +657,17 @@ function handleResizeStart(dir) {
     resizing = true; resizeDir = dir;
     window.addEventListener('mousemove', handleResizing);
     window.addEventListener('mouseup', handleResizeEnd);
+    window.addEventListener('touchmove', handleResizingTouch, {passive:false});
+    window.addEventListener('touchend', handleResizeEndTouch);
   };
 }
 function handleResizing(e) {
-  if (!resizing) return;
-  let m = state.members.find(m=>m.id===selectedId);
-  let [x,y,w,h] = m.rect;
-  const rect = canvas.getBoundingClientRect();
-  let mx = Math.round(e.clientX-rect.left), my = Math.round(e.clientY-rect.top);
+if (!resizing) return;
+let m = state.members.find(x=>x.id===selectedId);
+if (!m) return;
+let [x,y,w,h] = m.rect;
+  const {x: mx2, y: my2} = canvasCoords(e);
+  let mx = mx2, my = my2;
   let minw = 20, minh = 20;
   switch (resizeDir) {
     case "n": {
@@ -641,41 +725,50 @@ function handleResizing(e) {
       break;
     }
   }
-  drawCanvas();
+  if (!rafId) rafId = requestAnimationFrame(()=>{ rafId = null; drawCanvas(); });
 }
 function handleResizeEnd() {
   resizing = false;
   window.removeEventListener('mousemove', handleResizing);
   window.removeEventListener('mouseup', handleResizeEnd);
+  window.removeEventListener('touchmove', handleResizingTouch);
+  window.removeEventListener('touchend', handleResizeEndTouch);
 }
+function handleResizingTouch(e) { e.preventDefault(); handleResizing(e.touches[0]); }
+function handleResizeEndTouch(e) { handleResizeEnd(); }
 function handleMoveStart(x, y, w, h) {
   return function(e) {
     e.preventDefault(); e.stopPropagation();
     moving = true;
-    const rect = canvas.getBoundingClientRect();
-    let mx = Math.round(e.clientX-rect.left), my = Math.round(e.clientY-rect.top);
+    const {x: mx, y: my} = canvasCoords(e);
     moveOffset = {dx: mx-x, dy: my-y, w, h};
     window.addEventListener('mousemove', handleMoving);
     window.addEventListener('mouseup', handleMoveEnd);
+    window.addEventListener('touchmove', handleMovingTouch, {passive:false});
+    window.addEventListener('touchend', handleMoveEndTouch);
   };
 }
 function handleMoving(e) {
   if (!moving) return;
-  let m = state.members.find(m=>m.id===selectedId);
-  const rect = canvas.getBoundingClientRect();
-  let mx = Math.round(e.clientX-rect.left), my = Math.round(e.clientY-rect.top);
+  let m = state.members.find(x=>x.id===selectedId);
+  if (!m) return;
+  const {x: mx, y: my} = canvasCoords(e);
   let newX = mx-moveOffset.dx, newY = my-moveOffset.dy;
   newX = Math.max(0, Math.min(canvas.width-moveOffset.w, newX));
   newY = Math.max(0, Math.min(canvas.height-moveOffset.h, newY));
   m.rect[0]=newX; m.rect[1]=newY;
-  drawCanvas();
+  if (!rafId) rafId = requestAnimationFrame(()=>{ rafId = null; drawCanvas(); });
 }
 function handleMoveEnd() {
   moving = false;
   moveOffset=null;
   window.removeEventListener('mousemove', handleMoving);
   window.removeEventListener('mouseup', handleMoveEnd);
+  window.removeEventListener('touchmove', handleMovingTouch);
+  window.removeEventListener('touchend', handleMoveEndTouch);
 }
+function handleMovingTouch(e) { e.preventDefault(); handleMoving(e.touches[0]); }
+function handleMoveEndTouch(e) { handleMoveEnd(); }
 function renderMemberList() {
   memberList.innerHTML = '';
   state.members.forEach(m=>{
@@ -830,71 +923,87 @@ function startQuiz() {
   showQuizModal();
 }
 function showQuizModal() {
-  quizModal.style.display='flex';
+  quizSection.classList.add('active');
+  document.querySelector('.actions-bar').style.display = 'none';
+  document.querySelector('.editor-section').style.display = 'none';
   renderQuizQ();
 }
+function hideQuiz() {
+  quizSection.classList.remove('active');
+  document.querySelector('.actions-bar').style.display = '';
+  document.querySelector('.editor-section').style.display = '';
+  quiz = null;
+}
+window.hideQuiz = hideQuiz;
 function renderQuizQ() {
   if (!quiz) return;
   quizContent.innerHTML = '';
+  // Update progress
+  const pct = (quiz.i / quiz.questions.length) * 100;
+  quizProgressFill.style.width = pct + '%';
+  quizProgressText.textContent = `Pregunta ${Math.min(quiz.i+1, quiz.questions.length)} de ${quiz.questions.length}`;
+
   if (quiz.i >= quiz.questions.length) {
     quizEndTime = Date.now();
+    quizProgressFill.style.width = '100%';
+    quizProgressText.textContent = '¡Completado!';
     let ms = quizEndTime - quizStartTime;
     let sec = Math.round(ms/1000);
     let min = Math.floor(sec/60);
     sec = sec%60;
     let timeStr = min > 0 ? `${min} min ${sec} s` : `${sec} s`;
-    quizContent.innerHTML = `<h2>¡Quiz Completado!</h2>
-      <div>Puntuación: <b class="${quiz.score/quiz.questions.length>.7?'score-good':'score-bad'}">${quiz.score} / ${quiz.questions.length}</b></div>
-      <div>Tiempo: <b>${timeStr}</b></div>
-      <ul style="font-size:.93em;">${
-        quiz.answers.map((a,i)=>`<li>Pregunta ${i+1}: ${a.correct?'✅':'❌'} ${a.desc}</li>`).join('')
+    quizContent.innerHTML = `<div class="quiz-results">
+      <h2>¡Quiz Completado!</h2>
+      <div class="quiz-score ${quiz.score/quiz.questions.length>.7?'score-good':'score-bad'}">${quiz.score} / ${quiz.questions.length}</div>
+      <div class="quiz-time">⏱ ${timeStr}</div>
+      <ul class="quiz-answers-list">${
+        quiz.answers.map((a,i)=>`<li class="${a.correct?'correct':'wrong'}">Pregunta ${i+1}: ${a.correct?'✅':'❌'} ${escapeHtml(a.desc)}</li>`).join('')
       }</ul>
-      <button class="button" onclick="quizModal.style.display='none'">Cerrar</button>
-    `;
+      <button class="button button--primary" style="margin-top:1rem;" onclick="hideQuiz()">Cerrar</button>
+    </div>`;
     return;
   }
   const q = quiz.questions[quiz.i];
   if (q.type==='who-photo') {
     const m = state.members.find(x=>x.id===q.member);
     let photo = cropImgToDataUrl(state.image, ...m.rect);
-    const opts = shuffle(state.members.filter(x=>x.name).map(x=>x.name)).slice(0,4);
-    if (!opts.includes(m.name)) opts[0]=m.name;
+    let opts = shuffle(state.members.filter(x=>x.name && x.name!==m.name).map(x=>x.name));
+    opts = [...new Set(opts)].slice(0,3);
+    opts.push(m.name);
+    opts = shuffle(opts);
     quizContent.innerHTML = `
-      <div class="quiz-big">¿Quién aparece en la foto?</div>
-      <div style="margin:1em 0; text-align:center;">
-        <img src="${photo}" class="quiz-img-big">
-      </div>
-      <div class="quiz-opt" style="text-align:center;">${
-        opts.map(n=>`<button class="button" style="font-size:1.1em" onclick="answerQuiz('${n.replace(/'/g,"\\'")}', null)">${n}</button>`).join(' ')
+      <div class="quiz-question">¿Quién aparece en la foto?</div>
+      <div class="quiz-photo-wrap"><img src="${photo}" class="quiz-img-big"></div>
+      <div class="quiz-options">${
+        opts.map(n=>`<button class="quiz-opt-btn" onclick="answerQuiz('${escapeHtml(n.replace(/'/g,"\\'"))}', null)">${escapeHtml(n)}</button>`).join('')
       }</div>
     `;
-    quizContent.dataset.desc = `¿Quién aparece en la foto? Correcto: ${m.name}`;
   } else if (q.type==='how-many-children') {
     const m = state.members.find(x=>x.id===q.member);
     const count = m.children.length;
-    let opts = shuffle([count, count+1, Math.max(0,count-1), count+2]).slice(0,4);
-    if (!opts.includes(count)) opts[0]=count; opts = opts.filter((v,i,a)=>a.indexOf(v)===i);
+    let optSet = new Set([count, count+1, Math.max(0,count-1), count+2]);
+    let i = count+3;
+    while (optSet.size < 4) optSet.add(i++);
+    let opts = shuffle([...optSet]).slice(0,4);
     quizContent.innerHTML = `
-      <div>¿Cuántos hijos tiene <b>${m.name}</b>?</div>
-      <div class="quiz-opt">${
-        opts.map(n=>`<button class="button" onclick="answerQuiz(${n}, null)">${n}</button>`).join(' ')
+      <div class="quiz-question">¿Cuántos hijos tiene <b>${escapeHtml(m.name)}</b>?</div>
+      <div class="quiz-options">${
+        opts.map(n=>`<button class="quiz-opt-btn" onclick="answerQuiz(${n}, null)">${n}</button>`).join('')
       }</div>
     `;
-    quizContent.dataset.desc = `¿Cuántos hijos tiene ${m.name}? Correcto: ${count}`;
   } else if (q.type==='who-spouse') {
     const m = state.members.find(x=>x.id===q.member);
     const spouse = state.members.find(x=>x.id===m.spouse);
-    let opts = state.members.filter(x=>x.id!==m.id && x.name).map(x=>x.name);
-    if (spouse && !opts.includes(spouse.name)) opts.unshift(spouse.name);
-    opts = shuffle(opts).slice(0,4);
-    if (!opts.includes(spouse.name)) opts[0]=spouse.name;
+    let opts = shuffle(state.members.filter(x=>x.id!==m.id && x.name && x.name!==spouse.name).map(x=>x.name));
+    opts = [...new Set(opts)].slice(0,3);
+    opts.push(spouse.name);
+    opts = shuffle(opts);
     quizContent.innerHTML = `
-      <div>¿Quién es la pareja de <b>${m.name}</b>?</div>
-      <div class="quiz-opt">${
-        shuffle(opts).map(n=>`<button class="button" onclick="answerQuiz('${n.replace(/'/g,"\\'")}', null)">${n}</button>`).join(' ')
+      <div class="quiz-question">¿Quién es la pareja de <b>${escapeHtml(m.name)}</b>?</div>
+      <div class="quiz-options">${
+        opts.map(n=>`<button class="quiz-opt-btn" onclick="answerQuiz('${escapeHtml(n.replace(/'/g,"\\'"))}', null)">${escapeHtml(n)}</button>`).join('')
       }</div>
     `;
-    quizContent.dataset.desc = `¿Quién es la pareja de ${m.name}? Correcto: ${spouse ? spouse.name : "(Ninguno)"}`;
   } else if (q.type==='who-parent') {
     const child = state.members.find(x=>x.id===q.child);
     const parentIds = state.members.filter(x=>x.children && x.children.includes(child.id)).map(x=>x.id);
@@ -907,19 +1016,18 @@ function renderQuizQ() {
     opts = opts.slice(0,4);
     if (!opts.some(o=>o.name===parentNames[0])) opts[0]={id:parentIds[0], name:parentNames[0], rect:state.members.find(x=>x.id===parentIds[0]).rect};
     quizContent.innerHTML = `
-      <div>¿Quién es el padre o madre de <b>${child.name}</b>?</div>
-      <div class="quiz-opt">${
+      <div class="quiz-question">¿Quién es el padre o madre de <b>${escapeHtml(child.name)}</b>?</div>
+      <div class="quiz-options">${
         shuffle(opts).map(o=>{
           if (Math.random()<0.5) {
-            return `<button class="button" onclick="answerQuiz('${o.name}', ${o.id})">${o.name}</button>`;
+            return `<button class="quiz-opt-btn" onclick="answerQuiz('${escapeHtml(o.name.replace(/'/g,"\\'"))}', ${o.id})">${escapeHtml(o.name)}</button>`;
           } else {
             let photo = cropImgToDataUrl(state.image, ...o.rect);
-            return `<button class="button" onclick="answerQuiz('${o.name}', ${o.id})"><img src="${photo}"></button>`;
+            return `<button class="quiz-opt-btn" onclick="answerQuiz('${escapeHtml(o.name.replace(/'/g,"\\'"))}', ${o.id})"><img src="${photo}"></button>`;
           }
-        }).join(' ')
+        }).join('')
       }</div>
     `;
-    quizContent.dataset.desc = `¿Quién es el padre o madre de ${child.name}? Correcto: ${parentNames.join(' o ')}`;
   }
 }
 window.answerQuiz = function(ans, ansId) {
@@ -950,15 +1058,20 @@ window.answerQuiz = function(ans, ansId) {
   quiz.i++;
   renderQuizQ();
 };
-quizExit.onclick = ()=>{ quizModal.style.display='none'; };
+quizExit.onclick = ()=>{ hideQuiz(); };
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    if (quizSection.classList.contains('active')) hideQuiz();
+    if (graphModal.style.display === 'flex') graphModal.style.display = 'none';
+  }
+});
 function cropImgToDataUrl(imgSrc, x, y, w, h) {
-  const img = document.createElement('img');
-  img.src = imgSrc;
+  const src = cachedImg || (() => { const i = document.createElement('img'); i.src = imgSrc; return i; })();
   const cvs = document.createElement('canvas');
   cvs.width = w; cvs.height = h;
   const ctx = cvs.getContext('2d');
   ctx.fillStyle='#fff';ctx.fillRect(0,0,w,h);
-  ctx.drawImage(img, x, y, w, h, 0, 0, w, h);
+  ctx.drawImage(src, x, y, w, h, 0, 0, w, h);
   return cvs.toDataURL();
 }
 function init() {
@@ -966,7 +1079,7 @@ function init() {
   renderMemberList();
 }
 startQuizBtn.onclick = startQuiz;
-window.onload = init;
+window.addEventListener('load', init);
 
 // ---------- GRAFO RELACIONES MEJORADO ----------
 graphBtn.onclick = function() {
@@ -978,14 +1091,13 @@ graphCloseBtn.onclick = function() {
 };
 function cropMemberPhoto(member) {
   if (!state.image || !member.rect) return null;
-  const img = document.createElement('img');
-  img.src = state.image;
+  const src = cachedImg || (() => { const i = document.createElement('img'); i.src = state.image; return i; })();
   const [x, y, w, h] = member.rect;
   const cvs = document.createElement('canvas');
   cvs.width = 64; cvs.height = 64;
   const ctx = cvs.getContext('2d');
   ctx.fillStyle = '#fff'; ctx.fillRect(0,0,64,64);
-  ctx.drawImage(img, x, y, w, h, 0, 0, 64, 64);
+  ctx.drawImage(src, x, y, w, h, 0, 0, 64, 64);
   return cvs;
 }
 function drawFamilyGraphV2() {
@@ -1006,7 +1118,7 @@ function drawFamilyGraphV2() {
     if (m.spouse && m.id < m.spouse) {
       const spouse = members.find(x=>x.id===m.spouse);
       const hijos = m.children || [];
-      families.push({parents:[m, spouse], children: hijos.map(cid=>members.find(x=>x.id===cid))});
+      families.push({parents:[m, spouse], children: hijos.map(cid=>members.find(x=>x.id===cid)).filter(Boolean)});
       used.add(m.id); used.add(spouse.id);
       for(let h of hijos) used.add(h);
     }
@@ -1014,7 +1126,7 @@ function drawFamilyGraphV2() {
   for(let m of members) {
     if (used.has(m.id)) continue;
     if ((m.children && m.children.length) && !m.spouse) {
-      families.push({parents:[m], children: m.children.map(cid=>members.find(x=>x.id===cid))});
+      families.push({parents:[m], children: m.children.map(cid=>members.find(x=>x.id===cid)).filter(Boolean)});
       used.add(m.id); for(let h of m.children) used.add(h);
     }
   }
@@ -1081,13 +1193,22 @@ function drawFamilyGraphV2() {
   });
   function drawNodeGraph(ctx, m, x, y, imgSize) {
     const photoCanvas = cropMemberPhoto(m);
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(x+imgSize/2, y+imgSize/2, imgSize/2, 0, 2*Math.PI);
-    ctx.closePath();
-    ctx.clip();
-    ctx.drawImage(photoCanvas, x, y, imgSize, imgSize);
-    ctx.restore();
+    if (photoCanvas) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(x+imgSize/2, y+imgSize/2, imgSize/2, 0, 2*Math.PI);
+      ctx.closePath();
+      ctx.clip();
+      ctx.drawImage(photoCanvas, x, y, imgSize, imgSize);
+      ctx.restore();
+    } else {
+      ctx.save();
+      ctx.fillStyle = '#eee';
+      ctx.beginPath();
+      ctx.arc(x+imgSize/2, y+imgSize/2, imgSize/2, 0, 2*Math.PI);
+      ctx.fill();
+      ctx.restore();
+    }
     ctx.strokeStyle="#1976d2"; ctx.lineWidth=2;
     ctx.beginPath();
     ctx.arc(x+imgSize/2, y+imgSize/2, imgSize/2, 0, 2*Math.PI);
@@ -1118,16 +1239,7 @@ function drawFamilyGraphV2() {
   }
 }
 
-// Add this file (or insert the contents into a <script> at the end of index.html).
-// On page load it will try to fetch 'quiz-familiar-session.ses' from the same location
-// and automatically prompt for the password and load it if available.
-//
-// This snippet expects the page to already define:
-// - decryptCompressedBytes(password, envelope)
-// - tryDecodeOldFormat(text)
-// - loadImage(dataUrl), drawCanvas(), renderMemberList(), showEditPane(null)
-// - pako (deflate/inflate) is available if needed for legacy handling.
-
+// Auto-load session file on page load
 window.addEventListener('load', async () => {
   const url = 'quiz-familiar-session.ses';
   try {
