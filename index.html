@@ -77,8 +77,8 @@
     
     /* Graph modal (keep as overlay since it's canvas-based) */
     #graph-modal { display:none; position:fixed; left:0; top:0; width:100vw; height:100vh; z-index:1200; background:rgba(40,40,60,0.92); align-items:center; justify-content:center; }
-    #graph-modal-inner { background:#fff; border-radius:14px; padding:1.5em; position:relative; max-width:96vw; max-height:90vh; overflow:auto; width:920px; }
-    #graph-canvas { background:#f8f9fa; display:block; margin:0 auto; border-radius:12px; max-width:100%; }
+    #graph-modal-inner { background:#fff; border-radius:14px; padding:1.5em; position:relative; max-width:96vw; max-height:90vh; overflow:auto; -webkit-overflow-scrolling:touch; }
+    #graph-canvas { background:#f8f9fa; display:block; border-radius:12px; }
     
     /* Desktop tweaks */
     @media (min-width: 768px) {
@@ -1116,6 +1116,7 @@ function drawFamilyGraphV2() {
   const ctx = graphCanvas.getContext('2d');
   const members = state.members.slice();
   if (!state.image || members.length === 0) {
+    graphCanvas.width = 900; graphCanvas.height = 400;
     ctx.clearRect(0,0,graphCanvas.width,graphCanvas.height);
     ctx.font = '24px sans-serif';
     ctx.fillStyle = '#999';
@@ -1124,16 +1125,14 @@ function drawFamilyGraphV2() {
   }
 
   // --- Build generation layers ---
-  // Find roots: members who are NOT children of anyone
   const childIds = new Set();
   members.forEach(m => (m.children||[]).forEach(cid => childIds.add(cid)));
   const roots = members.filter(m => !childIds.has(m.id));
 
-  // Assign generations via BFS from roots
-  const genMap = {}; // id -> generation number
+  // Assign generations via BFS
+  const genMap = {};
   const queue = [];
   roots.forEach(r => { genMap[r.id] = 0; queue.push(r.id); });
-  // Also assign spouses same generation
   while (queue.length) {
     const id = queue.shift();
     const m = members.find(x=>x.id===id);
@@ -1149,7 +1148,6 @@ function drawFamilyGraphV2() {
       }
     });
   }
-  // Assign any unvisited members
   members.forEach(m => { if (genMap[m.id] === undefined) genMap[m.id] = 0; });
 
   // Group by generation
@@ -1162,16 +1160,14 @@ function drawFamilyGraphV2() {
   const genKeys = Object.keys(generations).map(Number).sort((a,b)=>a-b);
 
   // --- Layout ---
-  const imgSize = 56, hPad = 24, vPad = 90, coupleGap = 8;
-  const canvasW = graphCanvas.width;
+  const imgSize = 56, hPad = 30, vPad = 100;
+  const nodePos = {};
+  let maxRowWidth = 0;
 
-  // Position each generation row, keeping couples together
-  const nodePos = {}; // id -> {x, y}
-  let totalH = 40;
-
+  // First pass: compute row widths
+  const rowOrders = {};
   genKeys.forEach(g => {
     const row = generations[g];
-    // Sort: couples adjacent
     const placed = new Set();
     const ordered = [];
     row.forEach(m => {
@@ -1183,20 +1179,33 @@ function drawFamilyGraphV2() {
         ordered.push(members.find(x=>x.id===m.spouse));
       }
     });
+    rowOrders[g] = ordered;
+    const rowWidth = ordered.length * (imgSize + hPad) - hPad;
+    if (rowWidth > maxRowWidth) maxRowWidth = rowWidth;
+  });
 
+  // Size canvas to fit content
+  const canvasW = Math.max(maxRowWidth + 80, 600);
+  const canvasH = Math.max(genKeys.length * (imgSize + vPad) + 60, 400);
+  graphCanvas.width = canvasW;
+  graphCanvas.height = canvasH;
+
+  // Second pass: position nodes centered
+  let yOffset = 40;
+  genKeys.forEach(g => {
+    const ordered = rowOrders[g];
     const rowWidth = ordered.length * (imgSize + hPad) - hPad;
     let x0 = (canvasW - rowWidth) / 2;
     ordered.forEach((m, i) => {
-      nodePos[m.id] = { x: x0 + i * (imgSize + hPad), y: totalH };
+      nodePos[m.id] = { x: x0 + i * (imgSize + hPad), y: yOffset };
     });
-    totalH += imgSize + vPad;
+    yOffset += imgSize + vPad;
   });
 
-  graphCanvas.height = Math.max(totalH, 400);
-  ctx.clearRect(0, 0, graphCanvas.width, graphCanvas.height);
+  ctx.clearRect(0, 0, canvasW, canvasH);
 
   // --- Draw connections ---
-  // Couple lines
+  // Couple lines (pink)
   members.forEach(m => {
     if (m.spouse && m.id < m.spouse && nodePos[m.id] && nodePos[m.spouse]) {
       const p1 = nodePos[m.id], p2 = nodePos[m.spouse];
@@ -1207,7 +1216,6 @@ function drawFamilyGraphV2() {
       ctx.moveTo(p1.x + imgSize/2, y);
       ctx.lineTo(p2.x + imgSize/2, y);
       ctx.stroke();
-      // Small heart/dot at midpoint
       const mx = (p1.x + p2.x)/2 + imgSize/2;
       ctx.fillStyle = '#e91e63';
       ctx.beginPath(); ctx.arc(mx, y, 4, 0, 2*Math.PI); ctx.fill();
@@ -1215,52 +1223,55 @@ function drawFamilyGraphV2() {
     }
   });
 
-  // Parent-child lines
+  // Parent-child lines (stepped)
   members.forEach(m => {
     if (!m.children || !m.children.length) return;
-    // Only draw from one parent per couple (lower id)
     if (m.spouse && m.id > m.spouse) return;
 
     const p1 = nodePos[m.id];
     const p2 = m.spouse ? nodePos[m.spouse] : null;
     if (!p1) return;
     const fromX = p2 ? (p1.x + p2.x)/2 + imgSize/2 : p1.x + imgSize/2;
-    const fromY = p1.y + imgSize;
+    const fromY = p1.y + imgSize + 2;
 
     m.children.forEach(cid => {
       const cp = nodePos[cid];
       if (!cp) return;
       const toX = cp.x + imgSize/2;
-      const toY = cp.y;
+      const toY = cp.y - 2;
       ctx.save();
       ctx.strokeStyle = '#666'; ctx.lineWidth = 1.5;
       ctx.beginPath();
-      // Stepped line: down, across, down
-      const midY = fromY + (toY - fromY) * 0.4;
+      const midY = fromY + (toY - fromY) * 0.45;
       ctx.moveTo(fromX, fromY);
       ctx.lineTo(fromX, midY);
       ctx.lineTo(toX, midY);
-      ctx.lineTo(toX, toY - 4);
+      ctx.lineTo(toX, toY);
       ctx.stroke();
-      // Small arrowhead
+      // Arrowhead
       ctx.beginPath();
-      ctx.moveTo(toX - 4, toY - 8);
-      ctx.lineTo(toX, toY - 2);
-      ctx.lineTo(toX + 4, toY - 8);
+      ctx.moveTo(toX - 4, toY - 6);
+      ctx.lineTo(toX, toY);
+      ctx.lineTo(toX + 4, toY - 6);
       ctx.stroke();
       ctx.restore();
     });
   });
 
-  // --- Draw nodes ---
+  // --- Draw nodes on top ---
   members.forEach(m => {
     const pos = nodePos[m.id];
     if (!pos) return;
-    drawNodeGraph(ctx, m, pos.x, pos.y, imgSize);
-  });
-
-  function drawNodeGraph(ctx, m, x, y, imgSize) {
     const photoCanvas = cropMemberPhoto(m);
+    const x = pos.x, y = pos.y;
+    // White circle background
+    ctx.save();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(x+imgSize/2, y+imgSize/2, imgSize/2+2, 0, 2*Math.PI);
+    ctx.fill();
+    ctx.restore();
+    // Photo
     if (photoCanvas) {
       ctx.save();
       ctx.beginPath();
@@ -1271,21 +1282,23 @@ function drawFamilyGraphV2() {
       ctx.restore();
     } else {
       ctx.save();
-      ctx.fillStyle = '#eee';
+      ctx.fillStyle = '#ddd';
       ctx.beginPath();
       ctx.arc(x+imgSize/2, y+imgSize/2, imgSize/2, 0, 2*Math.PI);
       ctx.fill();
       ctx.restore();
     }
-    ctx.strokeStyle="#1976d2"; ctx.lineWidth=2;
+    // Border
+    ctx.strokeStyle = "#1976d2"; ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.arc(x+imgSize/2, y+imgSize/2, imgSize/2, 0, 2*Math.PI);
     ctx.stroke();
-    ctx.font = '12px sans-serif';
+    // Name
+    ctx.font = '11px sans-serif';
     ctx.fillStyle = "#222";
     ctx.textAlign = "center";
-    ctx.fillText(m.name, x+imgSize/2, y+imgSize+14);
-  }
+    ctx.fillText(m.name, x+imgSize/2, y+imgSize+13);
+  });
 }
 
 // Auto-load session file on page load
