@@ -902,22 +902,23 @@ function canStartQuiz() {
   return true;
 }
 function startQuiz() {
-  if (!canStartQuiz()) return;
-  let maxQuestions = parseInt(numQuestionsInput.value, 10) || 10;
-  const qs = [];
-  state.members.forEach(m=>{
-    if (m.name) {
-      qs.push({type:'who-photo', member:m.id});
+if (!canStartQuiz()) return;
+let maxQuestions = parseInt(numQuestionsInput.value, 10) || 10;
+const qs = [];
+const isLeaf = id => !state.members.some(m=>m.children && m.children.includes(id))===false;
+state.members.forEach(m=>{
+  if (m.name) {
+    qs.push({type:'who-photo', member:m.id});
+    if (m.children && m.children.length > 0) {
       qs.push({type:'how-many-children', member:m.id});
-      if (m.spouse) qs.push({type:'who-spouse', member:m.id});
-      if (m.children && m.children.length>0) {
-        m.children.forEach(cid=>{
-          qs.push({type:'who-parent', child:cid});
-        });
-      }
+      m.children.forEach(cid=>{
+        qs.push({type:'who-parent', child:cid});
+      });
     }
-  });
-  quiz = { questions: shuffle(qs).slice(0, maxQuestions), i:0, score:0, answers:[] };
+    if (m.spouse) qs.push({type:'who-spouse', member:m.id});
+  }
+});
+quiz = { questions: shuffle(qs).slice(0, maxQuestions), i:0, score:0, answers:[], qStart:Date.now() };
   quizStartTime = Date.now();
   quizEndTime = 0;
   showQuizModal();
@@ -947,6 +948,7 @@ function renderQuizQ() {
     quizEndTime = Date.now();
     quizProgressFill.style.width = '100%';
     quizProgressText.textContent = '¡Completado!';
+    document.querySelector('.quiz-exit-wrap').style.display = 'none';
     let ms = quizEndTime - quizStartTime;
     let sec = Math.round(ms/1000);
     let min = Math.floor(sec/60);
@@ -957,13 +959,18 @@ function renderQuizQ() {
       <div class="quiz-score ${quiz.score/quiz.questions.length>.7?'score-good':'score-bad'}">${quiz.score} / ${quiz.questions.length}</div>
       <div class="quiz-time">⏱ ${timeStr}</div>
       <ul class="quiz-answers-list">${
-        quiz.answers.map((a,i)=>`<li class="${a.correct?'correct':'wrong'}">Pregunta ${i+1}: ${a.correct?'✅':'❌'} ${escapeHtml(a.desc)}</li>`).join('')
+        quiz.answers.map((a,i)=>{
+          let t = a.time < 1000 ? `${a.time}ms` : `${(a.time/1000).toFixed(1)}s`;
+          return `<li class="${a.correct?'correct':'wrong'}">Pregunta ${i+1} (${t}): ${a.correct?'✅':'❌'} ${escapeHtml(a.desc)}</li>`;
+        }).join('')
       }</ul>
       <button class="button button--primary" style="margin-top:1rem;" onclick="hideQuiz()">Cerrar</button>
     </div>`;
     return;
   }
   const q = quiz.questions[quiz.i];
+  document.querySelector('.quiz-exit-wrap').style.display = '';
+  quiz.qStart = Date.now();
   if (q.type==='who-photo') {
     const m = state.members.find(x=>x.id===q.member);
     let photo = cropImgToDataUrl(state.image, ...m.rect);
@@ -1008,13 +1015,18 @@ function renderQuizQ() {
     const child = state.members.find(x=>x.id===q.child);
     const parentIds = state.members.filter(x=>x.children && x.children.includes(child.id)).map(x=>x.id);
     const parentNames = parentIds.map(pid=>state.members.find(x=>x.id===pid).name);
-    let opts = shuffle(state.members.filter(x=>x.name && x.id!==child.id).map(x=>({
+    // Use only other parents as distractors (not childless members)
+    const allParents = state.members.filter(x=>x.children && x.children.length>0 && x.name && x.id!==child.id);
+    let opts = shuffle(allParents.filter(x=>!parentIds.includes(x.id)).map(x=>({
       id:x.id,
       name:x.name,
       rect:x.rect
     })));
-    opts = opts.slice(0,4);
-    if (!opts.some(o=>o.name===parentNames[0])) opts[0]={id:parentIds[0], name:parentNames[0], rect:state.members.find(x=>x.id===parentIds[0]).rect};
+    opts = opts.slice(0,3);
+    // Add one correct parent
+    const correctParent = state.members.find(x=>x.id===parentIds[0]);
+    opts.push({id:correctParent.id, name:correctParent.name, rect:correctParent.rect});
+    opts = shuffle(opts);
     quizContent.innerHTML = `
       <div class="quiz-question">¿Quién es el padre o madre de <b>${escapeHtml(child.name)}</b>?</div>
       <div class="quiz-options">${
@@ -1053,7 +1065,7 @@ window.answerQuiz = function(ans, ansId) {
     correct = parentNames.includes(ans);
     desc = `¿Quién es el padre o madre de ${child.name}? Correcto: ${parentNames.join(' o ')}, Tú: ${ans}`;
   }
-  quiz.answers.push({correct, desc});
+  quiz.answers.push({correct, desc, time: Date.now() - quiz.qStart});
   if (correct) quiz.score++;
   quiz.i++;
   renderQuizQ();
@@ -1102,95 +1114,151 @@ function cropMemberPhoto(member) {
 }
 function drawFamilyGraphV2() {
   const ctx = graphCanvas.getContext('2d');
-  ctx.clearRect(0,0,graphCanvas.width,graphCanvas.height);
   const members = state.members.slice();
   if (!state.image || members.length === 0) {
+    ctx.clearRect(0,0,graphCanvas.width,graphCanvas.height);
     ctx.font = '24px sans-serif';
     ctx.fillStyle = '#999';
     ctx.fillText('No hay datos familiares para mostrar.', 100, 180);
     return;
   }
-  // --- Agrupa familias (parejas) ---
-  let used = new Set();
-  let families = [];
-  for(let m of members) {
-    if (used.has(m.id)) continue;
-    if (m.spouse && m.id < m.spouse) {
-      const spouse = members.find(x=>x.id===m.spouse);
-      const hijos = m.children || [];
-      families.push({parents:[m, spouse], children: hijos.map(cid=>members.find(x=>x.id===cid)).filter(Boolean)});
-      used.add(m.id); used.add(spouse.id);
-      for(let h of hijos) used.add(h);
+
+  // --- Build generation layers ---
+  // Find roots: members who are NOT children of anyone
+  const childIds = new Set();
+  members.forEach(m => (m.children||[]).forEach(cid => childIds.add(cid)));
+  const roots = members.filter(m => !childIds.has(m.id));
+
+  // Assign generations via BFS from roots
+  const genMap = {}; // id -> generation number
+  const queue = [];
+  roots.forEach(r => { genMap[r.id] = 0; queue.push(r.id); });
+  // Also assign spouses same generation
+  while (queue.length) {
+    const id = queue.shift();
+    const m = members.find(x=>x.id===id);
+    if (!m) continue;
+    if (m.spouse && genMap[m.spouse] === undefined) {
+      genMap[m.spouse] = genMap[id];
+      queue.push(m.spouse);
     }
+    (m.children||[]).forEach(cid => {
+      if (genMap[cid] === undefined) {
+        genMap[cid] = genMap[id] + 1;
+        queue.push(cid);
+      }
+    });
   }
-  for(let m of members) {
-    if (used.has(m.id)) continue;
-    if ((m.children && m.children.length) && !m.spouse) {
-      families.push({parents:[m], children: m.children.map(cid=>members.find(x=>x.id===cid)).filter(Boolean)});
-      used.add(m.id); for(let h of m.children) used.add(h);
-    }
-  }
-  for(let m of members) {
-    if (used.has(m.id)) continue;
-    families.push({parents:[m], children:[]});
-    used.add(m.id);
-  }
-  // --- Layout: cada familia en una fila ---
-  let imgSize = 64, hPad = 30, vPad = 35, famPad = 55;
-  let y = 40;
-  let nodePositions = {};
-  let canvasW = graphCanvas.width;
-  let famBlocks = families.map(fam => {
-    let nParents = fam.parents.length;
-    let nChildren = fam.children.length;
-    let width = Math.max(nParents * (imgSize+hPad) - hPad, nChildren * (imgSize+hPad) - hPad, imgSize);
-    return {fam, width};
+  // Assign any unvisited members
+  members.forEach(m => { if (genMap[m.id] === undefined) genMap[m.id] = 0; });
+
+  // Group by generation
+  const generations = {};
+  members.forEach(m => {
+    const g = genMap[m.id];
+    if (!generations[g]) generations[g] = [];
+    generations[g].push(m);
   });
-  let totalH = 0;
-  famBlocks.forEach((blk,i)=>{
-    let famY = y+totalH;
-    blk.y = famY;
-    totalH += imgSize + vPad + (blk.fam.children.length ? imgSize+famPad : famPad);
+  const genKeys = Object.keys(generations).map(Number).sort((a,b)=>a-b);
+
+  // --- Layout ---
+  const imgSize = 56, hPad = 24, vPad = 90, coupleGap = 8;
+  const canvasW = graphCanvas.width;
+
+  // Position each generation row, keeping couples together
+  const nodePos = {}; // id -> {x, y}
+  let totalH = 40;
+
+  genKeys.forEach(g => {
+    const row = generations[g];
+    // Sort: couples adjacent
+    const placed = new Set();
+    const ordered = [];
+    row.forEach(m => {
+      if (placed.has(m.id)) return;
+      placed.add(m.id);
+      ordered.push(m);
+      if (m.spouse && row.some(x=>x.id===m.spouse) && !placed.has(m.spouse)) {
+        placed.add(m.spouse);
+        ordered.push(members.find(x=>x.id===m.spouse));
+      }
+    });
+
+    const rowWidth = ordered.length * (imgSize + hPad) - hPad;
+    let x0 = (canvasW - rowWidth) / 2;
+    ordered.forEach((m, i) => {
+      nodePos[m.id] = { x: x0 + i * (imgSize + hPad), y: totalH };
+    });
+    totalH += imgSize + vPad;
   });
-  graphCanvas.height = Math.max(totalH+imgSize, 400);
-  famBlocks.forEach(blk=>{
-    let {fam, width, y} = blk;
-    const nParents = fam.parents.length;
-    let x0 = (canvasW-width)/2;
-    fam.parents.forEach((p, pi)=>{
-      let x = x0 + pi*(imgSize+hPad) + (nParents==2?hPad/2:0);
-      nodePositions[p.id] = {x, y};
-      drawNodeGraph(ctx, p, x, y, imgSize);
-    });
-    let childrenY = y+imgSize+vPad;
-    const nChildren = fam.children.length;
-    fam.children.forEach((c, ci)=>{
-      let x = x0 + ci*(imgSize+hPad) + (nChildren==2?hPad/2:0);
-      nodePositions[c.id] = {x, y:childrenY};
-      drawNodeGraph(ctx, c, x, childrenY, imgSize);
-    });
-    fam.children.forEach((c, ci)=>{
-      let px = fam.parents.map(p=>nodePositions[p.id].x+imgSize/2);
-      let py = fam.parents.map(p=>nodePositions[p.id].y+imgSize);
-      let midx = px.length==2 ? (px[0]+px[1])/2 : px[0];
-      let topy = Math.max(...py);
-      let cx = nodePositions[c.id].x+imgSize/2;
-      let cy = nodePositions[c.id].y;
-      drawArrow(ctx, midx, topy, cx, cy-2);
-    });
-    if(fam.parents.length==2){
-      let [p1,p2] = fam.parents;
-      let x1 = nodePositions[p1.id].x+imgSize/2, x2 = nodePositions[p2.id].x+imgSize/2;
-      let y1 = nodePositions[p1.id].y+imgSize/2;
+
+  graphCanvas.height = Math.max(totalH, 400);
+  ctx.clearRect(0, 0, graphCanvas.width, graphCanvas.height);
+
+  // --- Draw connections ---
+  // Couple lines
+  members.forEach(m => {
+    if (m.spouse && m.id < m.spouse && nodePos[m.id] && nodePos[m.spouse]) {
+      const p1 = nodePos[m.id], p2 = nodePos[m.spouse];
       ctx.save();
-      ctx.strokeStyle = "#2186c7"; ctx.lineWidth=3;
+      ctx.strokeStyle = '#e91e63'; ctx.lineWidth = 2;
+      const y = p1.y + imgSize/2;
       ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y1);
+      ctx.moveTo(p1.x + imgSize/2, y);
+      ctx.lineTo(p2.x + imgSize/2, y);
       ctx.stroke();
+      // Small heart/dot at midpoint
+      const mx = (p1.x + p2.x)/2 + imgSize/2;
+      ctx.fillStyle = '#e91e63';
+      ctx.beginPath(); ctx.arc(mx, y, 4, 0, 2*Math.PI); ctx.fill();
       ctx.restore();
     }
   });
+
+  // Parent-child lines
+  members.forEach(m => {
+    if (!m.children || !m.children.length) return;
+    // Only draw from one parent per couple (lower id)
+    if (m.spouse && m.id > m.spouse) return;
+
+    const p1 = nodePos[m.id];
+    const p2 = m.spouse ? nodePos[m.spouse] : null;
+    if (!p1) return;
+    const fromX = p2 ? (p1.x + p2.x)/2 + imgSize/2 : p1.x + imgSize/2;
+    const fromY = p1.y + imgSize;
+
+    m.children.forEach(cid => {
+      const cp = nodePos[cid];
+      if (!cp) return;
+      const toX = cp.x + imgSize/2;
+      const toY = cp.y;
+      ctx.save();
+      ctx.strokeStyle = '#666'; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      // Stepped line: down, across, down
+      const midY = fromY + (toY - fromY) * 0.4;
+      ctx.moveTo(fromX, fromY);
+      ctx.lineTo(fromX, midY);
+      ctx.lineTo(toX, midY);
+      ctx.lineTo(toX, toY - 4);
+      ctx.stroke();
+      // Small arrowhead
+      ctx.beginPath();
+      ctx.moveTo(toX - 4, toY - 8);
+      ctx.lineTo(toX, toY - 2);
+      ctx.lineTo(toX + 4, toY - 8);
+      ctx.stroke();
+      ctx.restore();
+    });
+  });
+
+  // --- Draw nodes ---
+  members.forEach(m => {
+    const pos = nodePos[m.id];
+    if (!pos) return;
+    drawNodeGraph(ctx, m, pos.x, pos.y, imgSize);
+  });
+
   function drawNodeGraph(ctx, m, x, y, imgSize) {
     const photoCanvas = cropMemberPhoto(m);
     if (photoCanvas) {
@@ -1213,29 +1281,10 @@ function drawFamilyGraphV2() {
     ctx.beginPath();
     ctx.arc(x+imgSize/2, y+imgSize/2, imgSize/2, 0, 2*Math.PI);
     ctx.stroke();
-    ctx.font = '14px sans-serif';
+    ctx.font = '12px sans-serif';
     ctx.fillStyle = "#222";
     ctx.textAlign = "center";
-    ctx.fillText(m.name, x+imgSize/2, y+imgSize+18);
-  }
-  function drawArrow(ctx, fromx, fromy, tox, toy) {
-    ctx.save();
-    ctx.strokeStyle="#555"; ctx.lineWidth=2;
-    ctx.beginPath();
-    ctx.moveTo(fromx, fromy);
-    ctx.lineTo(tox, toy);
-    ctx.stroke();
-    let dx = tox-fromx, dy = toy-fromy, len = Math.sqrt(dx*dx+dy*dy);
-    if(len>0){
-      let ux = dx/len, uy=dy/len;
-      let size = 9;
-      ctx.beginPath();
-      ctx.moveTo(tox-ux*size-uy*size/2, toy-uy*size+ux*size/2);
-      ctx.lineTo(tox, toy);
-      ctx.lineTo(tox-ux*size+uy*size/2, toy-uy*size-ux*size/2);
-      ctx.stroke();
-    }
-    ctx.restore();
+    ctx.fillText(m.name, x+imgSize/2, y+imgSize+14);
   }
 }
 
