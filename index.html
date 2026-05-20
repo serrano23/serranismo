@@ -44,7 +44,9 @@
     .quiz-results h2 { color: #1976d2; margin-bottom: .5rem; }
     .quiz-score { font-size: 2.5rem; font-weight: 700; margin: .5rem 0; }
     .quiz-time { font-size: 1rem; color: #666; margin-bottom: 1rem; }
-    .quiz-answers-list { text-align: left; font-size: .9rem; list-style: none; padding: 0; max-height: 40vh; overflow-y: auto; }
+    .quiz-answers-list { text-align: left; font-size: .9rem; list-style: none; padding: 0; }
+    .quiz-stars { font-size: 1.8rem; margin: .5rem 0; letter-spacing: 2px; }
+    .quiz-star-score { font-size: 1rem; color: #555; margin-bottom: 1rem; }
     .quiz-answers-list li { padding: .5em .8em; margin-bottom: .3em; border-radius: 6px; background: #f9f9f9; }
     .quiz-answers-list li.correct { background: #e8f5e9; }
     .quiz-answers-list li.wrong { background: #ffebee; }
@@ -954,9 +956,19 @@ function renderQuizQ() {
     let min = Math.floor(sec/60);
     sec = sec%60;
     let timeStr = min > 0 ? `${min} min ${sec} s` : `${sec} s`;
+    // Star score: combines accuracy and speed (0-1000)
+    const accuracy = quiz.score / quiz.questions.length;
+    const avgTime = quiz.answers.reduce((s,a)=>s+a.time, 0) / quiz.answers.length;
+    // Speed factor: 1.0 if avg <= 1s, drops toward 0 as avg approaches 15s
+    const speedFactor = Math.max(0, Math.min(1, 1 - (avgTime - 1000) / 14000));
+    const starScore = Math.round(accuracy * 700 + speedFactor * accuracy * 300);
+    const starCount = starScore >= 900 ? 5 : starScore >= 700 ? 4 : starScore >= 500 ? 3 : starScore >= 300 ? 2 : starScore >= 100 ? 1 : 0;
+    const stars = '★'.repeat(starCount) + '☆'.repeat(5 - starCount);
     quizContent.innerHTML = `<div class="quiz-results">
       <h2>¡Quiz Completado!</h2>
-      <div class="quiz-score ${quiz.score/quiz.questions.length>.7?'score-good':'score-bad'}">${quiz.score} / ${quiz.questions.length}</div>
+      <div class="quiz-score ${accuracy>.7?'score-good':'score-bad'}">${quiz.score} / ${quiz.questions.length}</div>
+      <div class="quiz-stars">${stars}</div>
+      <div class="quiz-star-score">${starScore} / 1000 puntos</div>
       <div class="quiz-time">⏱ ${timeStr}</div>
       <ul class="quiz-answers-list">${
         quiz.answers.map((a,i)=>{
@@ -982,7 +994,7 @@ function renderQuizQ() {
       <div class="quiz-question">¿Quién aparece en la foto?</div>
       <div class="quiz-photo-wrap"><img src="${photo}" class="quiz-img-big"></div>
       <div class="quiz-options">${
-        opts.map(n=>`<button class="quiz-opt-btn" onclick="answerQuiz('${escapeHtml(n.replace(/'/g,"\\'"))}', null)">${escapeHtml(n)}</button>`).join('')
+        opts.map(n=>`<button class="quiz-opt-btn" onclick="answerQuiz('${escapeHtml(n.replace(/'/g,"\\'"))}', null, this)">${escapeHtml(n)}</button>`).join('')
       }</div>
     `;
   } else if (q.type==='how-many-children') {
@@ -995,7 +1007,7 @@ function renderQuizQ() {
     quizContent.innerHTML = `
       <div class="quiz-question">¿Cuántos hijos tiene <b>${escapeHtml(m.name)}</b>?</div>
       <div class="quiz-options">${
-        opts.map(n=>`<button class="quiz-opt-btn" onclick="answerQuiz(${n}, null)">${n}</button>`).join('')
+        opts.map(n=>`<button class="quiz-opt-btn" onclick="answerQuiz(${n}, null, this)">${n}</button>`).join('')
       }</div>
     `;
   } else if (q.type==='who-spouse') {
@@ -1008,7 +1020,7 @@ function renderQuizQ() {
     quizContent.innerHTML = `
       <div class="quiz-question">¿Quién es la pareja de <b>${escapeHtml(m.name)}</b>?</div>
       <div class="quiz-options">${
-        opts.map(n=>`<button class="quiz-opt-btn" onclick="answerQuiz('${escapeHtml(n.replace(/'/g,"\\'"))}', null)">${escapeHtml(n)}</button>`).join('')
+        opts.map(n=>`<button class="quiz-opt-btn" onclick="answerQuiz('${escapeHtml(n.replace(/'/g,"\\'"))}', null, this)">${escapeHtml(n)}</button>`).join('')
       }</div>
     `;
   } else if (q.type==='who-parent') {
@@ -1032,17 +1044,19 @@ function renderQuizQ() {
       <div class="quiz-options">${
         shuffle(opts).map(o=>{
           if (Math.random()<0.5) {
-            return `<button class="quiz-opt-btn" onclick="answerQuiz('${escapeHtml(o.name.replace(/'/g,"\\'"))}', ${o.id})">${escapeHtml(o.name)}</button>`;
+            return `<button class="quiz-opt-btn" onclick="answerQuiz('${escapeHtml(o.name.replace(/'/g,"\\'"))}', ${o.id}, this)">${escapeHtml(o.name)}</button>`;
           } else {
             let photo = cropImgToDataUrl(state.image, ...o.rect);
-            return `<button class="quiz-opt-btn" onclick="answerQuiz('${escapeHtml(o.name.replace(/'/g,"\\'"))}', ${o.id})"><img src="${photo}"></button>`;
+            return `<button class="quiz-opt-btn" onclick="answerQuiz('${escapeHtml(o.name.replace(/'/g,"\\'"))}', ${o.id}, this)"><img src="${photo}"></button>`;
           }
         }).join('')
       }</div>
     `;
   }
 }
-window.answerQuiz = function(ans, ansId) {
+window.answerQuiz = function(ans, ansId, btnEl) {
+  if (quiz._answering) return; // prevent double-tap
+  quiz._answering = true;
   const q = quiz.questions[quiz.i];
   let correct = false, desc = '';
   if (q.type==='who-photo') {
@@ -1067,8 +1081,20 @@ window.answerQuiz = function(ans, ansId) {
   }
   quiz.answers.push({correct, desc, time: Date.now() - quiz.qStart});
   if (correct) quiz.score++;
-  quiz.i++;
-  renderQuizQ();
+  // Visual feedback: highlight tapped button
+  if (btnEl) {
+    btnEl.style.background = correct ? '#c8e6c9' : '#ffcdd2';
+    btnEl.style.borderColor = correct ? '#2e7d32' : '#c62828';
+    btnEl.style.color = correct ? '#1b5e20' : '#b71c1c';
+    btnEl.style.fontWeight = '700';
+  }
+  // Disable all buttons
+  document.querySelectorAll('.quiz-opt-btn').forEach(b => { b.disabled = true; b.style.opacity = '0.7'; });
+  setTimeout(() => {
+    quiz._answering = false;
+    quiz.i++;
+    renderQuizQ();
+  }, 650);
 };
 quizExit.onclick = ()=>{ hideQuiz(); };
 document.addEventListener('keydown', function(e) {
@@ -1171,23 +1197,56 @@ function drawFamilyGraphV2() {
   const ROW_H = 120;      // vertical spacing between generations
   const MARGIN = 30;
 
-  // Build ordered list per generation: couples together
+  // Build ordered list per generation: children grouped under their parents
   const rowOrders = {};
-  genKeys.forEach(g => {
+  genKeys.forEach((g, gi) => {
     const row = genGroups[g];
-    const placed = new Set();
-    const ordered = [];
-    // Try to order children grouped by their parent
-    row.forEach(m => {
-      if (placed.has(m.id)) return;
-      placed.add(m.id);
-      ordered.push(m);
-      if (m.spouse && row.some(x=>x.id===m.spouse) && !placed.has(m.spouse)) {
-        placed.add(m.spouse);
-        ordered.push(members.find(x=>x.id===m.spouse));
-      }
-    });
-    rowOrders[g] = ordered;
+    if (gi === 0) {
+      // Root row: just couples together
+      const placed = new Set();
+      const ordered = [];
+      row.forEach(m => {
+        if (placed.has(m.id)) return;
+        placed.add(m.id);
+        ordered.push(m);
+        if (m.spouse && row.some(x=>x.id===m.spouse) && !placed.has(m.spouse)) {
+          placed.add(m.spouse);
+          ordered.push(members.find(x=>x.id===m.spouse));
+        }
+      });
+      rowOrders[g] = ordered;
+    } else {
+      // Non-root rows: order by parent position so children appear below parents
+      const prevOrdered = rowOrders[genKeys[gi-1]] || [];
+      const placed = new Set();
+      const ordered = [];
+      // For each member in previous row, emit their children (with spouses) in order
+      prevOrdered.forEach(parent => {
+        if (!parent.children) return;
+        parent.children.forEach(cid => {
+          if (placed.has(cid)) return;
+          const child = row.find(x=>x.id===cid);
+          if (!child) return;
+          placed.add(child.id);
+          ordered.push(child);
+          if (child.spouse && row.some(x=>x.id===child.spouse) && !placed.has(child.spouse)) {
+            placed.add(child.spouse);
+            ordered.push(members.find(x=>x.id===child.spouse));
+          }
+        });
+      });
+      // Any remaining in this generation not yet placed
+      row.forEach(m => {
+        if (placed.has(m.id)) return;
+        placed.add(m.id);
+        ordered.push(m);
+        if (m.spouse && row.some(x=>x.id===m.spouse) && !placed.has(m.spouse)) {
+          placed.add(m.spouse);
+          ordered.push(members.find(x=>x.id===m.spouse));
+        }
+      });
+      rowOrders[g] = ordered;
+    }
   });
 
   // Compute positions: each person gets (imgSize + gap) of horizontal space
