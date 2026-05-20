@@ -956,12 +956,18 @@ function renderQuizQ() {
     let min = Math.floor(sec/60);
     sec = sec%60;
     let timeStr = min > 0 ? `${min} min ${sec} s` : `${sec} s`;
-    // Star score: combines accuracy and speed (0-1000)
+    // Star score: accuracy + speed, ms-precision (0-1000)
     const accuracy = quiz.score / quiz.questions.length;
-    const avgTime = quiz.answers.reduce((s,a)=>s+a.time, 0) / quiz.answers.length;
-    // Speed factor: 1.0 if avg <= 1s, drops toward 0 as avg approaches 15s
-    const speedFactor = Math.max(0, Math.min(1, 1 - (avgTime - 1000) / 14000));
-    const starScore = Math.round(accuracy * 700 + speedFactor * accuracy * 300);
+    const baseline = 500 * quiz.questions.length; // ideal total time
+    const totalTime = quiz.answers.reduce((s,a)=>s+a.time, 0);
+    const overtime = Math.max(0, totalTime - baseline);
+    // Speed degrades: every extra ms beyond baseline costs points, fully gone at 10s/question extra
+    const maxOvertime = 10000 * quiz.questions.length;
+    const speedFactor = Math.max(0, 1 - overtime / maxOvertime);
+    const rawScore = accuracy * 700 + speedFactor * accuracy * 300;
+    // Add ms fraction to break ties: use total ms modulo to add 0.000-0.999
+    const tieBreaker = 1 - (totalTime % 1000) / 1000;
+    const starScore = Math.min(1000, Math.round(rawScore * 10) / 10 + Math.round(tieBreaker * 10) / 100);
     const starCount = starScore >= 900 ? 5 : starScore >= 700 ? 4 : starScore >= 500 ? 3 : starScore >= 300 ? 2 : starScore >= 100 ? 1 : 0;
     const stars = '★'.repeat(starCount) + '☆'.repeat(5 - starCount);
     quizContent.innerHTML = `<div class="quiz-results">
@@ -1094,7 +1100,7 @@ window.answerQuiz = function(ans, ansId, btnEl) {
     quiz._answering = false;
     quiz.i++;
     renderQuizQ();
-  }, 650);
+  }, 500);
 };
 quizExit.onclick = ()=>{ hideQuiz(); };
 document.addEventListener('keydown', function(e) {
@@ -1190,117 +1196,123 @@ function drawFamilyGraphV2() {
   members.forEach(m => { const g=genMap[m.id]; if(!genGroups[g]) genGroups[g]=[]; genGroups[g].push(m); });
   const genKeys = Object.keys(genGroups).map(Number).sort((a,b)=>a-b);
 
-  // --- Simple layout: generous fixed spacing ---
+  // --- Subtree-width layout ---
   const imgSize = 52;
-  const COUPLE_GAP = 16;  // gap between couple members
-  const SIBLING_GAP = 30; // gap between siblings/groups
-  const ROW_H = 120;      // vertical spacing between generations
+  const SLOT = 76;        // minimum horizontal space per leaf person
+  const COUPLE_GAP = 14;
+  const ROW_H = 120;
   const MARGIN = 30;
-
-  // Build ordered list per generation: children grouped under their parents
-  const rowOrders = {};
-  genKeys.forEach((g, gi) => {
-    const row = genGroups[g];
-    if (gi === 0) {
-      // Root row: just couples together
-      const placed = new Set();
-      const ordered = [];
-      row.forEach(m => {
-        if (placed.has(m.id)) return;
-        placed.add(m.id);
-        ordered.push(m);
-        if (m.spouse && row.some(x=>x.id===m.spouse) && !placed.has(m.spouse)) {
-          placed.add(m.spouse);
-          ordered.push(members.find(x=>x.id===m.spouse));
-        }
-      });
-      rowOrders[g] = ordered;
-    } else {
-      // Non-root rows: order by parent position so children appear below parents
-      const prevOrdered = rowOrders[genKeys[gi-1]] || [];
-      const placed = new Set();
-      const ordered = [];
-      // For each member in previous row, emit their children (with spouses) in order
-      prevOrdered.forEach(parent => {
-        if (!parent.children) return;
-        parent.children.forEach(cid => {
-          if (placed.has(cid)) return;
-          const child = row.find(x=>x.id===cid);
-          if (!child) return;
-          placed.add(child.id);
-          ordered.push(child);
-          if (child.spouse && row.some(x=>x.id===child.spouse) && !placed.has(child.spouse)) {
-            placed.add(child.spouse);
-            ordered.push(members.find(x=>x.id===child.spouse));
-          }
-        });
-      });
-      // Any remaining in this generation not yet placed
-      row.forEach(m => {
-        if (placed.has(m.id)) return;
-        placed.add(m.id);
-        ordered.push(m);
-        if (m.spouse && row.some(x=>x.id===m.spouse) && !placed.has(m.spouse)) {
-          placed.add(m.spouse);
-          ordered.push(members.find(x=>x.id===m.spouse));
-        }
-      });
-      rowOrders[g] = ordered;
-    }
-  });
-
-  // Compute positions: each person gets (imgSize + gap) of horizontal space
-  // Couples share a tighter gap
   const nodePos = {};
-  let maxRowW = 0;
 
-  genKeys.forEach(g => {
-    const ordered = rowOrders[g];
-    // Calculate row width
-    let rowW = 0;
-    for (let i = 0; i < ordered.length; i++) {
-      rowW += imgSize;
-      if (i < ordered.length - 1) {
-        const curr = ordered[i], next = ordered[i+1];
-        // Are they a couple?
-        if (curr.spouse === next.id || next.spouse === curr.id) {
-          rowW += COUPLE_GAP;
-        } else {
-          rowW += SIBLING_GAP;
-        }
-      }
+  // Compute subtree width (in slots) for each "family unit" (parent or couple)
+  // A unit = primary parent (lower id if couple). Width = max(sum of children unit widths, self width)
+  const unitWidth = {}; // id -> slots
+  function getUnitId(m) {
+    // Returns the "primary" id for the family unit
+    if (m.spouse && m.spouse < m.id && members.some(x=>x.id===m.spouse))
+      return m.spouse; // spouse with lower id is primary
+    return m.id;
+  }
+  function calcWidth(id) {
+    if (unitWidth[id] !== undefined) return unitWidth[id];
+    const m = members.find(x=>x.id===id);
+    if (!m) { unitWidth[id] = 1; return 1; }
+    // If this person is the non-primary spouse, width is 0 (counted with partner)
+    if (m.spouse && m.spouse < m.id && members.some(x=>x.id===m.spouse)) {
+      unitWidth[id] = 0; return 0;
     }
-    if (rowW > maxRowW) maxRowW = rowW;
+    const kids = (m.children||[]).filter(cid => members.some(x=>x.id===cid));
+    if (kids.length === 0) {
+      // Leaf: 1 slot for single, 2 for couple
+      const w = m.spouse && members.some(x=>x.id===m.spouse) ? 2 : 1;
+      unitWidth[id] = w; return w;
+    }
+    // Sum up children unit widths
+    let total = 0;
+    const seen = new Set();
+    kids.forEach(cid => {
+      const child = members.find(x=>x.id===cid);
+      if (!child || seen.has(cid)) return;
+      seen.add(cid);
+      const uid = getUnitId(child);
+      if (seen.has(uid) && uid !== cid) return;
+      seen.add(uid);
+      total += calcWidth(uid);
+      // If child has spouse, and spouse is not the primary, still count spouse slot
+      if (child.spouse && child.spouse !== uid && !seen.has(child.spouse)) {
+        seen.add(child.spouse);
+      }
+    });
+    const selfW = m.spouse && members.some(x=>x.id===m.spouse) ? 2 : 1;
+    unitWidth[id] = Math.max(total, selfW);
+    return unitWidth[id];
+  }
+  // Calculate from leaves up
+  members.forEach(m => calcWidth(getUnitId(m)));
+
+  // Place nodes top-down, centering children under parents
+  function placeUnit(id, left, y) {
+    const m = members.find(x=>x.id===id);
+    if (!m) return;
+    const w = unitWidth[id] || 1;
+    const centerX = left + (w * SLOT) / 2;
+
+    // Place this person (and spouse)
+    if (m.spouse && members.some(x=>x.id===m.spouse) && m.id < m.spouse) {
+      nodePos[m.id] = {x: centerX - imgSize - COUPLE_GAP/2, y};
+      nodePos[m.spouse] = {x: centerX + COUPLE_GAP/2, y};
+    } else if (!m.spouse || !members.some(x=>x.id===m.spouse)) {
+      nodePos[m.id] = {x: centerX - imgSize/2, y};
+    }
+    // Place children
+    const kids = (m.children||[]).filter(cid => members.some(x=>x.id===cid));
+    if (kids.length === 0) return;
+    let cx = left;
+    const seen = new Set();
+    kids.forEach(cid => {
+      if (seen.has(cid)) return;
+      seen.add(cid);
+      const child = members.find(x=>x.id===cid);
+      if (!child) return;
+      const uid = getUnitId(child);
+      if (seen.has(uid) && uid !== cid) return;
+      seen.add(uid);
+      if (child.spouse) seen.add(child.spouse);
+      const childW = unitWidth[uid] || 1;
+      placeUnit(uid, cx, y + ROW_H);
+      cx += childW * SLOT;
+    });
+  }
+
+  // Find root units and place them
+  const rootUnits = [];
+  const seenRoots = new Set();
+  const roots2 = members.filter(m => !childIds.has(m.id));
+  roots2.forEach(r => {
+    const uid = getUnitId(r);
+    if (seenRoots.has(uid)) return;
+    seenRoots.add(uid);
+    if (r.spouse) seenRoots.add(r.spouse);
+    rootUnits.push(uid);
   });
 
-  const canvasW = Math.max(maxRowW + MARGIN*2, 400);
+  let totalSlots = 0;
+  rootUnits.forEach(uid => { totalSlots += unitWidth[uid] || 1; });
+
+  const canvasW = Math.max(totalSlots * SLOT + MARGIN*2, 400);
   const canvasH = Math.max(genKeys.length * ROW_H + 80, 300);
   graphCanvas.width = canvasW;
   graphCanvas.height = canvasH;
 
-  // Position each row centered
-  genKeys.forEach((g, gi) => {
-    const ordered = rowOrders[g];
-    // Calc row width again
-    let rowW = 0;
-    for (let i = 0; i < ordered.length; i++) {
-      rowW += imgSize;
-      if (i < ordered.length - 1) {
-        const curr = ordered[i], next = ordered[i+1];
-        if (curr.spouse === next.id || next.spouse === curr.id) rowW += COUPLE_GAP;
-        else rowW += SIBLING_GAP;
-      }
-    }
-    let x = (canvasW - rowW) / 2;
-    const y = MARGIN + gi * ROW_H;
-    ordered.forEach((m, i) => {
-      nodePos[m.id] = {x, y};
-      if (i < ordered.length - 1) {
-        const next = ordered[i+1];
-        if (m.spouse === next.id || next.spouse === m.id) x += imgSize + COUPLE_GAP;
-        else x += imgSize + SIBLING_GAP;
-      }
-    });
+  let xCursor = MARGIN;
+  rootUnits.forEach(uid => {
+    placeUnit(uid, xCursor, MARGIN);
+    xCursor += (unitWidth[uid] || 1) * SLOT;
+  });
+
+  // Fallback: any unplaced members
+  members.forEach(m => {
+    if (!nodePos[m.id]) nodePos[m.id] = {x: MARGIN, y: MARGIN + genMap[m.id] * ROW_H};
   });
 
   ctx.clearRect(0, 0, canvasW, canvasH);
