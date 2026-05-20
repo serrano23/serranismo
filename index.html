@@ -1124,9 +1124,21 @@ function drawFamilyGraphV2() {
   }
 
   // --- Assign generations ---
+  // A "true root" is someone who is NOT a child of anyone AND is not just a spouse
+  // who married into a lower generation.
   const childIds = new Set();
   members.forEach(m => (m.children||[]).forEach(cid => childIds.add(cid)));
-  const roots = members.filter(m => !childIds.has(m.id));
+  
+  // True roots: not a child, and either has no spouse or spouse is also not a child
+  const trueRoots = members.filter(m => {
+    if (childIds.has(m.id)) return false;
+    // If this person's spouse IS a child of someone, then this person is a married-in
+    // at a lower generation — don't seed them as root
+    if (m.spouse && childIds.has(m.spouse)) return false;
+    return true;
+  });
+  // If no true roots found (circular?), fallback to all non-children
+  const roots = trueRoots.length > 0 ? trueRoots : members.filter(m => !childIds.has(m.id));
 
   const genMap = {};
   const queue = [];
@@ -1135,13 +1147,16 @@ function drawFamilyGraphV2() {
     const id = queue.shift();
     const m = members.find(x=>x.id===id);
     if (!m) continue;
+    // Assign spouse same generation
     if (m.spouse && genMap[m.spouse] === undefined) {
       genMap[m.spouse] = genMap[id]; queue.push(m.spouse);
     }
+    // Assign children next generation
     (m.children||[]).forEach(cid => {
       if (genMap[cid] === undefined) { genMap[cid] = genMap[id]+1; queue.push(cid); }
     });
   }
+  // Fallback: any unvisited members
   members.forEach(m => { if (genMap[m.id] === undefined) genMap[m.id] = 0; });
 
   // Group by generation
