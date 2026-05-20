@@ -1117,19 +1117,17 @@ function drawFamilyGraphV2() {
   const members = state.members.slice();
   if (!state.image || members.length === 0) {
     graphCanvas.width = 900; graphCanvas.height = 400;
-    ctx.clearRect(0,0,graphCanvas.width,graphCanvas.height);
-    ctx.font = '24px sans-serif';
-    ctx.fillStyle = '#999';
-    ctx.fillText('No hay datos familiares para mostrar.', 100, 180);
+    ctx.clearRect(0,0,900,400);
+    ctx.font = '20px sans-serif'; ctx.fillStyle = '#999';
+    ctx.fillText('No hay datos familiares para mostrar.', 80, 180);
     return;
   }
 
-  // --- Build generation layers ---
+  // --- Assign generations ---
   const childIds = new Set();
   members.forEach(m => (m.children||[]).forEach(cid => childIds.add(cid)));
   const roots = members.filter(m => !childIds.has(m.id));
 
-  // Assign generations via BFS
   const genMap = {};
   const queue = [];
   roots.forEach(r => { genMap[r.id] = 0; queue.push(r.id); });
@@ -1138,190 +1136,121 @@ function drawFamilyGraphV2() {
     const m = members.find(x=>x.id===id);
     if (!m) continue;
     if (m.spouse && genMap[m.spouse] === undefined) {
-      genMap[m.spouse] = genMap[id];
-      queue.push(m.spouse);
+      genMap[m.spouse] = genMap[id]; queue.push(m.spouse);
     }
     (m.children||[]).forEach(cid => {
-      if (genMap[cid] === undefined) {
-        genMap[cid] = genMap[id] + 1;
-        queue.push(cid);
-      }
+      if (genMap[cid] === undefined) { genMap[cid] = genMap[id]+1; queue.push(cid); }
     });
   }
   members.forEach(m => { if (genMap[m.id] === undefined) genMap[m.id] = 0; });
 
   // Group by generation
-  const generations = {};
-  members.forEach(m => {
-    const g = genMap[m.id];
-    if (!generations[g]) generations[g] = [];
-    generations[g].push(m);
-  });
-  const genKeys = Object.keys(generations).map(Number).sort((a,b)=>a-b);
+  const genGroups = {};
+  members.forEach(m => { const g=genMap[m.id]; if(!genGroups[g]) genGroups[g]=[]; genGroups[g].push(m); });
+  const genKeys = Object.keys(genGroups).map(Number).sort((a,b)=>a-b);
 
-  // --- Layout using tree-based positioning ---
-  // Each node gets a "slot" width. Leaves get 1 slot. Parents get sum of children slots.
-  const NODE_W = 80; // horizontal space per slot
-  const NODE_H = 130; // vertical space per generation
-  const imgSize = 56;
+  // --- Simple layout: generous fixed spacing ---
+  const imgSize = 52;
+  const COUPLE_GAP = 16;  // gap between couple members
+  const SIBLING_GAP = 30; // gap between siblings/groups
+  const ROW_H = 120;      // vertical spacing between generations
+  const MARGIN = 30;
 
-  // Compute subtree width for each member (bottom-up)
-  const slotWidth = {}; // id -> number of slots
-  function computeWidth(id) {
-    if (slotWidth[id] !== undefined) return slotWidth[id];
-    const m = members.find(x=>x.id===id);
-    if (!m || !m.children || m.children.length === 0) {
-      slotWidth[id] = 1;
-      return 1;
-    }
-    // Only count from one parent per couple
-    if (m.spouse && m.id > m.spouse) {
-      slotWidth[id] = 0; // spouse shares width
-      return 0;
-    }
-    let w = 0;
-    m.children.forEach(cid => {
-      const child = members.find(x=>x.id===cid);
-      if (!child) return;
-      let childW = computeWidth(cid);
-      // If child has a spouse in same generation, add 1 for the spouse
-      if (child.spouse && genMap[child.spouse] === genMap[cid]) {
-        const spouseW = computeWidth(child.spouse);
-        childW = Math.max(childW, 1) + 1; // child + spouse side by side
+  // Build ordered list per generation: couples together
+  const rowOrders = {};
+  genKeys.forEach(g => {
+    const row = genGroups[g];
+    const placed = new Set();
+    const ordered = [];
+    // Try to order children grouped by their parent
+    row.forEach(m => {
+      if (placed.has(m.id)) return;
+      placed.add(m.id);
+      ordered.push(m);
+      if (m.spouse && row.some(x=>x.id===m.spouse) && !placed.has(m.spouse)) {
+        placed.add(m.spouse);
+        ordered.push(members.find(x=>x.id===m.spouse));
       }
-      w += Math.max(childW, 1);
     });
-    slotWidth[id] = Math.max(w, 1);
-    return slotWidth[id];
-  }
-  roots.forEach(r => computeWidth(r.id));
-  members.forEach(m => { if (slotWidth[m.id] === undefined) slotWidth[m.id] = 1; });
-
-  // Position nodes top-down
-  const nodePos = {};
-
-  // Total width of root row
-  let totalRootSlots = 0;
-  const rootGroups = []; // [{ids:[], slots:N}]
-  const placedRoots = new Set();
-  roots.forEach(r => {
-    if (placedRoots.has(r.id)) return;
-    placedRoots.add(r.id);
-    let slots = Math.max(slotWidth[r.id], 1);
-    const group = [r.id];
-    if (r.spouse && roots.some(x=>x.id===r.spouse) && !placedRoots.has(r.spouse)) {
-      placedRoots.add(r.spouse);
-      group.push(r.spouse);
-      slots = Math.max(slots, 1) + 1; // at least 2 for the couple
-    }
-    rootGroups.push({ids: group, slots});
-    totalRootSlots += slots;
+    rowOrders[g] = ordered;
   });
 
-  const canvasW = Math.max(totalRootSlots * NODE_W + 40, 500);
-  const canvasH = Math.max(genKeys.length * NODE_H + 60, 350);
+  // Compute positions: each person gets (imgSize + gap) of horizontal space
+  // Couples share a tighter gap
+  const nodePos = {};
+  let maxRowW = 0;
+
+  genKeys.forEach(g => {
+    const ordered = rowOrders[g];
+    // Calculate row width
+    let rowW = 0;
+    for (let i = 0; i < ordered.length; i++) {
+      rowW += imgSize;
+      if (i < ordered.length - 1) {
+        const curr = ordered[i], next = ordered[i+1];
+        // Are they a couple?
+        if (curr.spouse === next.id || next.spouse === curr.id) {
+          rowW += COUPLE_GAP;
+        } else {
+          rowW += SIBLING_GAP;
+        }
+      }
+    }
+    if (rowW > maxRowW) maxRowW = rowW;
+  });
+
+  const canvasW = Math.max(maxRowW + MARGIN*2, 400);
+  const canvasH = Math.max(genKeys.length * ROW_H + 80, 300);
   graphCanvas.width = canvasW;
   graphCanvas.height = canvasH;
 
-  // Place root groups
-  let xCursor = 20;
-  rootGroups.forEach(g => {
-    const blockW = g.slots * NODE_W;
-    const centerX = xCursor + blockW / 2;
-    if (g.ids.length === 2) {
-      nodePos[g.ids[0]] = {x: centerX - imgSize/2 - 20, y: 30};
-      nodePos[g.ids[1]] = {x: centerX + imgSize/2 + 20 - imgSize, y: 30};
-    } else {
-      nodePos[g.ids[0]] = {x: centerX - imgSize/2, y: 30};
-    }
-    xCursor += blockW;
-  });
-
-  // Place children recursively under their parents
-  function placeChildren(parentId) {
-    const m = members.find(x=>x.id===parentId);
-    if (!m || !m.children || !m.children.length) return;
-    if (m.spouse && m.id > m.spouse) return; // only place from primary parent
-
-    const parentPos = nodePos[parentId];
-    const spousePos = m.spouse ? nodePos[m.spouse] : null;
-    if (!parentPos) return;
-
-    const centerX = spousePos ? (parentPos.x + spousePos.x + imgSize) / 2 : parentPos.x + imgSize/2;
-    const childY = parentPos.y + NODE_H;
-
-    // Compute total width needed for children
-    let totalChildSlots = 0;
-    const childGroups = [];
-    const placedChildren = new Set();
-    m.children.forEach(cid => {
-      if (placedChildren.has(cid)) return;
-      const child = members.find(x=>x.id===cid);
-      if (!child) return;
-      placedChildren.add(cid);
-      let slots = Math.max(slotWidth[cid], 1);
-      const group = [cid];
-      if (child.spouse && genMap[child.spouse] === genMap[cid] && !placedChildren.has(child.spouse)) {
-        placedChildren.add(child.spouse);
-        group.push(child.spouse);
-        slots = Math.max(slots, 1) + 1;
+  // Position each row centered
+  genKeys.forEach((g, gi) => {
+    const ordered = rowOrders[g];
+    // Calc row width again
+    let rowW = 0;
+    for (let i = 0; i < ordered.length; i++) {
+      rowW += imgSize;
+      if (i < ordered.length - 1) {
+        const curr = ordered[i], next = ordered[i+1];
+        if (curr.spouse === next.id || next.spouse === curr.id) rowW += COUPLE_GAP;
+        else rowW += SIBLING_GAP;
       }
-      childGroups.push({ids: group, slots});
-      totalChildSlots += slots;
-    });
-
-    const totalW = totalChildSlots * NODE_W;
-    let cx = centerX - totalW / 2;
-
-    childGroups.forEach(g => {
-      const blockW = g.slots * NODE_W;
-      const blockCenter = cx + blockW / 2;
-      if (g.ids.length === 2) {
-        nodePos[g.ids[0]] = {x: blockCenter - imgSize/2 - 20, y: childY};
-        nodePos[g.ids[1]] = {x: blockCenter + imgSize/2 + 20 - imgSize, y: childY};
-      } else {
-        nodePos[g.ids[0]] = {x: blockCenter - imgSize/2, y: childY};
-      }
-      cx += blockW;
-    });
-
-    // Recurse
-    m.children.forEach(cid => placeChildren(cid));
-  }
-
-  roots.forEach(r => placeChildren(r.id));
-
-  // Also place any members that still have no position
-  members.forEach(m => {
-    if (!nodePos[m.id]) {
-      nodePos[m.id] = {x: 20, y: 30 + genMap[m.id] * NODE_H};
     }
+    let x = (canvasW - rowW) / 2;
+    const y = MARGIN + gi * ROW_H;
+    ordered.forEach((m, i) => {
+      nodePos[m.id] = {x, y};
+      if (i < ordered.length - 1) {
+        const next = ordered[i+1];
+        if (m.spouse === next.id || next.spouse === m.id) x += imgSize + COUPLE_GAP;
+        else x += imgSize + SIBLING_GAP;
+      }
+    });
   });
 
   ctx.clearRect(0, 0, canvasW, canvasH);
 
-  // --- Draw connections ---
-  // Couple lines (pink)
+  // --- Draw couple lines ---
   members.forEach(m => {
     if (m.spouse && m.id < m.spouse && nodePos[m.id] && nodePos[m.spouse]) {
       const p1 = nodePos[m.id], p2 = nodePos[m.spouse];
-      ctx.save();
-      ctx.strokeStyle = '#e91e63'; ctx.lineWidth = 2.5;
       const ly = p1.y + imgSize/2;
+      ctx.save();
+      ctx.strokeStyle = '#e91e63'; ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(p1.x + imgSize, ly);
       ctx.lineTo(p2.x, ly);
       ctx.stroke();
+      // Heart
       const mx = (p1.x + imgSize + p2.x) / 2;
-      ctx.fillStyle = '#e91e63';
-      ctx.font = '14px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('\u2764', mx, ly + 5);
+      ctx.fillStyle = '#e91e63'; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('\u2764', mx, ly + 4);
       ctx.restore();
     }
   });
 
-  // Parent-child lines
+  // --- Draw parent-child lines ---
   members.forEach(m => {
     if (!m.children || !m.children.length) return;
     if (m.spouse && m.id > m.spouse) return;
@@ -1329,92 +1258,68 @@ function drawFamilyGraphV2() {
     const p1 = nodePos[m.id];
     const p2 = m.spouse ? nodePos[m.spouse] : null;
     if (!p1) return;
-    const fromX = p2 ? (p1.x + imgSize + p2.x) / 2 : p1.x + imgSize/2;
-    const fromY = p1.y + imgSize + 4;
 
-    // Draw a single vertical trunk, then horizontal bar to children
+    // Start point: center between couple, or center of single parent
+    const fromX = p2 ? (p1.x + p2.x + imgSize) / 2 : p1.x + imgSize/2;
+    const fromY = p1.y + imgSize + 2;
+
     const childPositions = m.children.map(cid => nodePos[cid]).filter(Boolean);
     if (!childPositions.length) return;
 
-    const trunkBottomY = fromY + 20;
+    const trunkY = fromY + (ROW_H - imgSize) * 0.35;
 
     ctx.save();
     ctx.strokeStyle = '#555'; ctx.lineWidth = 1.5;
 
-    // Trunk down from couple
-    ctx.beginPath();
-    ctx.moveTo(fromX, fromY);
-    ctx.lineTo(fromX, trunkBottomY);
-    ctx.stroke();
+    // Vertical trunk from parents
+    ctx.beginPath(); ctx.moveTo(fromX, fromY); ctx.lineTo(fromX, trunkY); ctx.stroke();
 
-    // Horizontal bar
+    // Horizontal bar spanning all children
     const childXs = childPositions.map(cp => cp.x + imgSize/2);
-    const minX = Math.min(...childXs, fromX);
-    const maxX = Math.max(...childXs, fromX);
-    ctx.beginPath();
-    ctx.moveTo(minX, trunkBottomY);
-    ctx.lineTo(maxX, trunkBottomY);
-    ctx.stroke();
+    const barLeft = Math.min(...childXs);
+    const barRight = Math.max(...childXs);
+    if (barLeft !== barRight || childXs[0] !== fromX) {
+      ctx.beginPath(); ctx.moveTo(Math.min(barLeft, fromX), trunkY); ctx.lineTo(Math.max(barRight, fromX), trunkY); ctx.stroke();
+    }
 
     // Vertical drops to each child
     childPositions.forEach(cp => {
       const toX = cp.x + imgSize/2;
-      const toY = cp.y - 4;
+      const toY = cp.y - 2;
+      ctx.beginPath(); ctx.moveTo(toX, trunkY); ctx.lineTo(toX, toY); ctx.stroke();
+      // Arrow
       ctx.beginPath();
-      ctx.moveTo(toX, trunkBottomY);
-      ctx.lineTo(toX, toY);
-      ctx.stroke();
-      // Small arrow
-      ctx.beginPath();
-      ctx.moveTo(toX - 3, toY - 5);
-      ctx.lineTo(toX, toY);
-      ctx.lineTo(toX + 3, toY - 5);
+      ctx.moveTo(toX-3, toY-5); ctx.lineTo(toX, toY); ctx.lineTo(toX+3, toY-5);
       ctx.stroke();
     });
-
     ctx.restore();
   });
 
-  // --- Draw nodes on top ---
+  // --- Draw nodes ---
   members.forEach(m => {
     const pos = nodePos[m.id];
     if (!pos) return;
-    const photoCanvas = cropMemberPhoto(m);
     const x = pos.x, y = pos.y;
-    // White background
-    ctx.save();
+    // White bg
     ctx.fillStyle = '#fff';
-    ctx.beginPath();
-    ctx.arc(x+imgSize/2, y+imgSize/2, imgSize/2+3, 0, 2*Math.PI);
-    ctx.fill();
-    ctx.restore();
+    ctx.beginPath(); ctx.arc(x+imgSize/2, y+imgSize/2, imgSize/2+3, 0, 2*Math.PI); ctx.fill();
     // Photo
-    if (photoCanvas) {
+    const photo = cropMemberPhoto(m);
+    if (photo) {
       ctx.save();
-      ctx.beginPath();
-      ctx.arc(x+imgSize/2, y+imgSize/2, imgSize/2, 0, 2*Math.PI);
-      ctx.closePath();
-      ctx.clip();
-      ctx.drawImage(photoCanvas, x, y, imgSize, imgSize);
+      ctx.beginPath(); ctx.arc(x+imgSize/2, y+imgSize/2, imgSize/2, 0, 2*Math.PI); ctx.closePath(); ctx.clip();
+      ctx.drawImage(photo, x, y, imgSize, imgSize);
       ctx.restore();
     } else {
-      ctx.save();
       ctx.fillStyle = '#ddd';
-      ctx.beginPath();
-      ctx.arc(x+imgSize/2, y+imgSize/2, imgSize/2, 0, 2*Math.PI);
-      ctx.fill();
-      ctx.restore();
+      ctx.beginPath(); ctx.arc(x+imgSize/2, y+imgSize/2, imgSize/2, 0, 2*Math.PI); ctx.fill();
     }
     // Border
-    ctx.strokeStyle = "#1976d2"; ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(x+imgSize/2, y+imgSize/2, imgSize/2, 0, 2*Math.PI);
-    ctx.stroke();
+    ctx.strokeStyle = '#1976d2'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(x+imgSize/2, y+imgSize/2, imgSize/2, 0, 2*Math.PI); ctx.stroke();
     // Name
-    ctx.font = '11px sans-serif';
-    ctx.fillStyle = "#222";
-    ctx.textAlign = "center";
-    ctx.fillText(m.name || '', x+imgSize/2, y+imgSize+14);
+    ctx.font = '11px sans-serif'; ctx.fillStyle = '#222'; ctx.textAlign = 'center';
+    ctx.fillText(m.name||'', x+imgSize/2, y+imgSize+13);
   });
 }
 
