@@ -929,7 +929,27 @@ function showQuizModal() {
   quizSection.classList.add('active');
   document.querySelector('.actions-bar').style.display = 'none';
   document.querySelector('.editor-section').style.display = 'none';
-  renderQuizQ();
+  document.querySelector('.quiz-exit-wrap').style.display = 'none';
+  quizProgressFill.style.width = '0%';
+  quizProgressText.textContent = '';
+  // Countdown 3-2-1
+  let count = 3;
+  quizContent.innerHTML = `<div style="text-align:center;padding:2rem 0;"><div id="countdown-num" style="font-size:5rem;font-weight:800;color:#1976d2;opacity:1;transition:all .3s;">${count}</div><div style="color:#666;margin-top:.5rem;">¡Prepárate!</div></div>`;
+  const tick = setInterval(() => {
+    count--;
+    const el = document.getElementById('countdown-num');
+    if (count > 0) {
+      if (el) { el.style.opacity='0'; setTimeout(()=>{ el.textContent=count; el.style.opacity='1'; },150); }
+    } else {
+      clearInterval(tick);
+      if (el) { el.style.opacity='0'; setTimeout(()=>{ el.textContent='¡Ya!'; el.style.color='#2e7d32'; el.style.opacity='1'; },150); }
+      setTimeout(() => {
+        document.querySelector('.quiz-exit-wrap').style.display = '';
+        quizStartTime = Date.now();
+        renderQuizQ();
+      }, 500);
+    }
+  }, 1000);
 }
 function hideQuiz() {
   quizSection.classList.remove('active');
@@ -984,6 +1004,14 @@ function renderQuizQ() {
       }</ul>
       <button class="button button--primary" style="margin-top:1rem;" onclick="hideQuiz()">Cerrar</button>
     </div>`;
+    // Confetti: exponential intensity based on score
+    const pct = quiz.score / quiz.questions.length;
+    if (pct >= 0.5) {
+      // Exponential: 50%->tiny, 90%->moderate, 100%->massive
+      const t = (pct - 0.5) / 0.5; // 0..1
+      const intensity = Math.pow(t, 3); // exponential curve
+      launchConfetti(intensity);
+    }
     return;
   }
   const q = quiz.questions[quiz.i];
@@ -1122,6 +1150,33 @@ function init() {
   drawCanvas();
   renderMemberList();
 }
+// Lightweight confetti effect
+function launchConfetti(intensity) {
+  // intensity: 0-1, exponentially scaled by caller
+  const count = Math.round(intensity * 120);
+  if (count <= 0) return;
+  const colors = ['#1976d2','#2e7d32','#e91e63','#ff9800','#9c27b0','#00bcd4','#ffeb3b'];
+  const container = document.createElement('div');
+  container.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:9999;overflow:hidden;';
+  document.body.appendChild(container);
+  for (let i = 0; i < count; i++) {
+    const dot = document.createElement('div');
+    const size = 6 + Math.random()*6;
+    const x = Math.random()*100;
+    const drift = (Math.random()-0.5)*40;
+    const dur = 1.5 + Math.random()*2;
+    const delay = Math.random()*0.8;
+    const color = colors[Math.floor(Math.random()*colors.length)];
+    const shape = Math.random()>0.5 ? '50%' : '2px';
+    dot.style.cssText = `position:absolute;top:-10px;left:${x}%;width:${size}px;height:${size}px;background:${color};border-radius:${shape};opacity:1;`;
+    dot.animate([
+      {transform:`translateY(0) translateX(0) rotate(0deg)`, opacity:1},
+      {transform:`translateY(${window.innerHeight+20}px) translateX(${drift}vw) rotate(${360+Math.random()*720}deg)`, opacity:0.2}
+    ], {duration:dur*1000, delay:delay*1000, easing:'cubic-bezier(.25,.46,.45,.94)', fill:'forwards'});
+    container.appendChild(dot);
+  }
+  setTimeout(()=>container.remove(), 5000);
+}
 startQuizBtn.onclick = startQuiz;
 window.addEventListener('load', init);
 
@@ -1196,123 +1251,100 @@ function drawFamilyGraphV2() {
   members.forEach(m => { const g=genMap[m.id]; if(!genGroups[g]) genGroups[g]=[]; genGroups[g].push(m); });
   const genKeys = Object.keys(genGroups).map(Number).sort((a,b)=>a-b);
 
-  // --- Subtree-width layout ---
+  // --- Layout: flat rows, children ordered under parents, spacing by descendant count ---
   const imgSize = 52;
-  const SLOT = 76;        // minimum horizontal space per leaf person
   const COUPLE_GAP = 14;
+  const BASE_GAP = 28;
   const ROW_H = 120;
   const MARGIN = 30;
-  const nodePos = {};
 
-  // Compute subtree width (in slots) for each "family unit" (parent or couple)
-  // A unit = primary parent (lower id if couple). Width = max(sum of children unit widths, self width)
-  const unitWidth = {}; // id -> slots
-  function getUnitId(m) {
-    // Returns the "primary" id for the family unit
-    if (m.spouse && m.spouse < m.id && members.some(x=>x.id===m.spouse))
-      return m.spouse; // spouse with lower id is primary
-    return m.id;
-  }
-  function calcWidth(id) {
-    if (unitWidth[id] !== undefined) return unitWidth[id];
+  // Count all descendants for each member (cached)
+  const descCount = {};
+  function countDesc(id) {
+    if (descCount[id] !== undefined) return descCount[id];
     const m = members.find(x=>x.id===id);
-    if (!m) { unitWidth[id] = 1; return 1; }
-    // If this person is the non-primary spouse, width is 0 (counted with partner)
-    if (m.spouse && m.spouse < m.id && members.some(x=>x.id===m.spouse)) {
-      unitWidth[id] = 0; return 0;
+    if (!m || !m.children || !m.children.length) { descCount[id]=0; return 0; }
+    let c = 0;
+    m.children.forEach(cid => { c += 1 + countDesc(cid); });
+    descCount[id] = c;
+    return c;
+  }
+  members.forEach(m => countDesc(m.id));
+
+  // Build ordered rows: gen 0 couples together, subsequent gens ordered by parent position
+  const rowOrders = {};
+  genKeys.forEach((g, gi) => {
+    const row = genGroups[g];
+    const placed = new Set();
+    const ordered = [];
+    if (gi > 0) {
+      const prev = rowOrders[genKeys[gi-1]] || [];
+      prev.forEach(p => {
+        (p.children||[]).forEach(cid => {
+          if (placed.has(cid)) return;
+          const child = row.find(x=>x.id===cid);
+          if (!child) return;
+          placed.add(child.id);
+          ordered.push(child);
+          if (child.spouse && row.some(x=>x.id===child.spouse) && !placed.has(child.spouse)) {
+            placed.add(child.spouse);
+            ordered.push(members.find(x=>x.id===child.spouse));
+          }
+        });
+      });
     }
-    const kids = (m.children||[]).filter(cid => members.some(x=>x.id===cid));
-    if (kids.length === 0) {
-      // Leaf: 1 slot for single, 2 for couple
-      const w = m.spouse && members.some(x=>x.id===m.spouse) ? 2 : 1;
-      unitWidth[id] = w; return w;
-    }
-    // Sum up children unit widths
-    let total = 0;
-    const seen = new Set();
-    kids.forEach(cid => {
-      const child = members.find(x=>x.id===cid);
-      if (!child || seen.has(cid)) return;
-      seen.add(cid);
-      const uid = getUnitId(child);
-      if (seen.has(uid) && uid !== cid) return;
-      seen.add(uid);
-      total += calcWidth(uid);
-      // If child has spouse, and spouse is not the primary, still count spouse slot
-      if (child.spouse && child.spouse !== uid && !seen.has(child.spouse)) {
-        seen.add(child.spouse);
+    row.forEach(m => {
+      if (placed.has(m.id)) return;
+      placed.add(m.id);
+      ordered.push(m);
+      if (m.spouse && row.some(x=>x.id===m.spouse) && !placed.has(m.spouse)) {
+        placed.add(m.spouse);
+        ordered.push(members.find(x=>x.id===m.spouse));
       }
     });
-    const selfW = m.spouse && members.some(x=>x.id===m.spouse) ? 2 : 1;
-    unitWidth[id] = Math.max(total, selfW);
-    return unitWidth[id];
-  }
-  // Calculate from leaves up
-  members.forEach(m => calcWidth(getUnitId(m)));
-
-  // Place nodes top-down, centering children under parents
-  function placeUnit(id, left, y) {
-    const m = members.find(x=>x.id===id);
-    if (!m) return;
-    const w = unitWidth[id] || 1;
-    const centerX = left + (w * SLOT) / 2;
-
-    // Place this person (and spouse)
-    if (m.spouse && members.some(x=>x.id===m.spouse) && m.id < m.spouse) {
-      nodePos[m.id] = {x: centerX - imgSize - COUPLE_GAP/2, y};
-      nodePos[m.spouse] = {x: centerX + COUPLE_GAP/2, y};
-    } else if (!m.spouse || !members.some(x=>x.id===m.spouse)) {
-      nodePos[m.id] = {x: centerX - imgSize/2, y};
-    }
-    // Place children
-    const kids = (m.children||[]).filter(cid => members.some(x=>x.id===cid));
-    if (kids.length === 0) return;
-    let cx = left;
-    const seen = new Set();
-    kids.forEach(cid => {
-      if (seen.has(cid)) return;
-      seen.add(cid);
-      const child = members.find(x=>x.id===cid);
-      if (!child) return;
-      const uid = getUnitId(child);
-      if (seen.has(uid) && uid !== cid) return;
-      seen.add(uid);
-      if (child.spouse) seen.add(child.spouse);
-      const childW = unitWidth[uid] || 1;
-      placeUnit(uid, cx, y + ROW_H);
-      cx += childW * SLOT;
-    });
-  }
-
-  // Find root units and place them
-  const rootUnits = [];
-  const seenRoots = new Set();
-  const roots2 = members.filter(m => !childIds.has(m.id));
-  roots2.forEach(r => {
-    const uid = getUnitId(r);
-    if (seenRoots.has(uid)) return;
-    seenRoots.add(uid);
-    if (r.spouse) seenRoots.add(r.spouse);
-    rootUnits.push(uid);
+    rowOrders[g] = ordered;
   });
 
-  let totalSlots = 0;
-  rootUnits.forEach(uid => { totalSlots += unitWidth[uid] || 1; });
+  // Compute row widths with descendant-based gaps
+  function getGap(curr, next) {
+    if (curr.spouse === next.id || next.spouse === curr.id) return COUPLE_GAP;
+    // Gap proportional to max descendants of the two neighbors
+    const d = Math.max(descCount[curr.id]||0, descCount[next.id]||0);
+    return BASE_GAP + d * 18;
+  }
 
-  const canvasW = Math.max(totalSlots * SLOT + MARGIN*2, 400);
+  const nodePos = {};
+  let maxRowW = 0;
+
+  genKeys.forEach(g => {
+    const ordered = rowOrders[g];
+    let rowW = 0;
+    for (let i = 0; i < ordered.length; i++) {
+      rowW += imgSize;
+      if (i < ordered.length - 1) rowW += getGap(ordered[i], ordered[i+1]);
+    }
+    if (rowW > maxRowW) maxRowW = rowW;
+  });
+
+  const canvasW = Math.max(maxRowW + MARGIN*2, 400);
   const canvasH = Math.max(genKeys.length * ROW_H + 80, 300);
   graphCanvas.width = canvasW;
   graphCanvas.height = canvasH;
 
-  let xCursor = MARGIN;
-  rootUnits.forEach(uid => {
-    placeUnit(uid, xCursor, MARGIN);
-    xCursor += (unitWidth[uid] || 1) * SLOT;
-  });
-
-  // Fallback: any unplaced members
-  members.forEach(m => {
-    if (!nodePos[m.id]) nodePos[m.id] = {x: MARGIN, y: MARGIN + genMap[m.id] * ROW_H};
+  // Position rows centered
+  genKeys.forEach((g, gi) => {
+    const ordered = rowOrders[g];
+    let rowW = 0;
+    for (let i = 0; i < ordered.length; i++) {
+      rowW += imgSize;
+      if (i < ordered.length - 1) rowW += getGap(ordered[i], ordered[i+1]);
+    }
+    let x = (canvasW - rowW) / 2;
+    const y = MARGIN + gi * ROW_H;
+    ordered.forEach((m, i) => {
+      nodePos[m.id] = {x, y};
+      if (i < ordered.length - 1) x += imgSize + getGap(ordered[i], ordered[i+1]);
+    });
   });
 
   ctx.clearRect(0, 0, canvasW, canvasH);
