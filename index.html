@@ -555,35 +555,6 @@ window.addEventListener('mousemove', function(e) {
 window.addEventListener('mouseup', function() {
   if (panning) { panning = false; canvas.classList.remove('panning'); }
 });
-// Touch pan
-canvasWrap.addEventListener('touchstart', function(e) {
-  if (drawingMode || resizing || moving || drawing) return;
-  // Don't pan if touching a handle or move overlay
-  if (e.target.closest('#handles-layer') || e.target.classList.contains('handle')) return;
-  if (e.touches.length === 1) {
-    const t = e.touches[0];
-    const {x: mx, y: my} = canvasCoords(t);
-    const clickedMember = state.members.some(m => {
-      let [x,y,w,h] = m.rect;
-      return mx >= x && mx <= x+w && my >= y && my <= y+h;
-    });
-    if (!clickedMember) {
-      panning = true;
-      panStart = {x: t.clientX, y: t.clientY};
-      scrollStart = {x: canvasWrap.scrollLeft, y: canvasWrap.scrollTop};
-    }
-  }
-}, {passive: true});
-canvasWrap.addEventListener('touchmove', function(e) {
-  if (!panning) return;
-  const t = e.touches[0];
-  canvasWrap.scrollLeft = scrollStart.x - (t.clientX - panStart.x);
-  canvasWrap.scrollTop = scrollStart.y - (t.clientY - panStart.y);
-  e.preventDefault();
-}, {passive: false});
-canvasWrap.addEventListener('touchend', function() {
-  panning = false;
-});
 
 // --- ADD MEMBER BUTTON (toggle drawing mode) ---
 addMemberBtn.onclick = function() {
@@ -730,24 +701,53 @@ canvas.addEventListener('mouseup', function(e) {
 canvas.addEventListener('mouseleave', function() {
   if (drawing) { drawing = false; tempRect = null; drawCanvas(); }
 });
+// Touch on canvas: tap = select member, drag = pan (unless drawingMode)
+let touchInfo = null;
 canvas.addEventListener('touchstart', function(e) {
   if (!state.image) return;
-  e.preventDefault();
+  if (e.touches.length !== 1) return;
   const t = e.touches[0];
-  canvas.dispatchEvent(new MouseEvent('mousedown', {clientX:t.clientX, clientY:t.clientY}));
+  touchInfo = {sx: t.clientX, sy: t.clientY, moved: false, t: Date.now()};
+  if (drawingMode) {
+    e.preventDefault();
+    canvas.dispatchEvent(new MouseEvent('mousedown', {clientX:t.clientX, clientY:t.clientY}));
+  }
 }, {passive:false});
 canvas.addEventListener('touchmove', function(e) {
-  if (!state.image) return;
-  if (!drawing) return; // allow native scroll/pan when not drawing
-  e.preventDefault();
+  if (!state.image || !touchInfo) return;
   const t = e.touches[0];
-  canvas.dispatchEvent(new MouseEvent('mousemove', {clientX:t.clientX, clientY:t.clientY}));
+  const dx = t.clientX - touchInfo.sx, dy = t.clientY - touchInfo.sy;
+  if (!touchInfo.moved && (Math.abs(dx) > 5 || Math.abs(dy) > 5)) touchInfo.moved = true;
+  if (drawingMode && drawing) {
+    e.preventDefault();
+    canvas.dispatchEvent(new MouseEvent('mousemove', {clientX:t.clientX, clientY:t.clientY}));
+  } else if (touchInfo.moved && !drawingMode) {
+    // Pan
+    e.preventDefault();
+    canvasWrap.scrollLeft -= (t.clientX - (touchInfo.lastX || touchInfo.sx));
+    canvasWrap.scrollTop -= (t.clientY - (touchInfo.lastY || touchInfo.sy));
+  }
+  touchInfo.lastX = t.clientX;
+  touchInfo.lastY = t.clientY;
 }, {passive:false});
 canvas.addEventListener('touchend', function(e) {
-  if (!state.image) return;
-  if (!drawing) return;
-  e.preventDefault();
-  canvas.dispatchEvent(new MouseEvent('mouseup', {clientX:0, clientY:0}));
+  if (!state.image || !touchInfo) return;
+  if (drawingMode && drawing) {
+    e.preventDefault();
+    canvas.dispatchEvent(new MouseEvent('mouseup', {clientX:0, clientY:0}));
+  } else if (!touchInfo.moved) {
+    // Tap: select member
+    const {x: mx, y: my} = canvasCoords({clientX: touchInfo.sx, clientY: touchInfo.sy});
+    let found = false;
+    for (let m of state.members) {
+      let [rx,ry,rw,rh] = m.rect;
+      if (mx >= rx && mx <= rx+rw && my >= ry && my <= ry+rh) {
+        selectedId = m.id; drawCanvas(); showEditPane(m.id); found = true; break;
+      }
+    }
+    if (!found) { selectedId = null; drawCanvas(); showEditPane(null); }
+  }
+  touchInfo = null;
 }, {passive:false});
 function drawHandles() {
 handlesLayer.innerHTML = '';
@@ -779,7 +779,7 @@ for (const p of points) {
   div.style.cursor = cursorForDir(p.dir);
   div.style.pointerEvents = "all";
   div.onmousedown = handleResizeStart(p.dir);
-  div.ontouchstart = function(e){ e.preventDefault(); e.stopPropagation(); handleResizeStart(p.dir)(e.touches[0]); };
+  div.ontouchstart = function(ev){ ev.preventDefault(); ev.stopPropagation(); const fn = handleResizeStart(p.dir); fn({preventDefault(){}, stopPropagation(){}, clientX: ev.touches[0].clientX, clientY: ev.touches[0].clientY}); };
   handlesLayer.appendChild(div);
 }
   let moveDiv = document.createElement('div');
@@ -790,7 +790,7 @@ for (const p of points) {
   moveDiv.style.background = "rgba(0,0,0,0)";
   moveDiv.style.pointerEvents = "all";
   moveDiv.onmousedown = handleMoveStart(x, y, w, h);
-  moveDiv.ontouchstart = function(e){ e.preventDefault(); e.stopPropagation(); handleMoveStart(x, y, w, h)(e.touches[0]); };
+  moveDiv.ontouchstart = function(ev){ ev.preventDefault(); ev.stopPropagation(); const fn = handleMoveStart(x, y, w, h); fn({preventDefault(){}, stopPropagation(){}, clientX: ev.touches[0].clientX, clientY: ev.touches[0].clientY}); };
   handlesLayer.appendChild(moveDiv);
 }
 function cursorForDir(dir) {
