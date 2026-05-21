@@ -1251,25 +1251,13 @@ function drawFamilyGraphV2() {
   members.forEach(m => { const g=genMap[m.id]; if(!genGroups[g]) genGroups[g]=[]; genGroups[g].push(m); });
   const genKeys = Object.keys(genGroups).map(Number).sort((a,b)=>a-b);
 
-  // --- Layout: flat rows, children ordered under parents, spacing by descendant count ---
+  // --- Layout: bottom-up positioning so parents sit above their children ---
   const imgSize = 52;
   const COUPLE_GAP = 14;
-  const BASE_GAP = 28;
+  const LEAF_GAP = 32;    // gap between non-couple leaf members
+  const FAMILY_GAP = 50;  // extra gap between children of different parents
   const ROW_H = 120;
   const MARGIN = 30;
-
-  // Count all descendants for each member (cached)
-  const descCount = {};
-  function countDesc(id) {
-    if (descCount[id] !== undefined) return descCount[id];
-    const m = members.find(x=>x.id===id);
-    if (!m || !m.children || !m.children.length) { descCount[id]=0; return 0; }
-    let c = 0;
-    m.children.forEach(cid => { c += 1 + countDesc(cid); });
-    descCount[id] = c;
-    return c;
-  }
-  members.forEach(m => countDesc(m.id));
 
   // Build ordered rows: gen 0 couples together, subsequent gens ordered by parent position
   const rowOrders = {};
@@ -1305,47 +1293,126 @@ function drawFamilyGraphV2() {
     rowOrders[g] = ordered;
   });
 
-  // Compute row widths with descendant-based gaps
-  function getGap(curr, next) {
-    if (curr.spouse === next.id || next.spouse === curr.id) return COUPLE_GAP;
-    // Gap proportional to max descendants of the two neighbors
-    const d = Math.max(descCount[curr.id]||0, descCount[next.id]||0);
-    return BASE_GAP + d * 18;
-  }
-
+  // --- Two-pass: position bottom row first, then each upper row centered on children ---
   const nodePos = {};
-  let maxRowW = 0;
+  const lastGen = genKeys[genKeys.length - 1];
 
-  genKeys.forEach(g => {
-    const ordered = rowOrders[g];
-    let rowW = 0;
-    for (let i = 0; i < ordered.length; i++) {
-      rowW += imgSize;
-      if (i < ordered.length - 1) rowW += getGap(ordered[i], ordered[i+1]);
-    }
-    if (rowW > maxRowW) maxRowW = rowW;
+  // Pass 1: lay out the bottom generation with even spacing, adding FAMILY_GAP between
+  // children of different parents
+  // First, figure out who each bottom-gen member's parent is
+  const parentOf = {}; // childId -> parentId (primary parent)
+  members.forEach(m => {
+    (m.children||[]).forEach(cid => {
+      if (!parentOf[cid]) {
+        // Use primary parent (lower id of couple)
+        if (m.spouse && m.id > m.spouse) parentOf[cid] = m.spouse;
+        else parentOf[cid] = m.id;
+      }
+    });
   });
 
-  const canvasW = Math.max(maxRowW + MARGIN*2, 400);
+  // Lay out bottom generation
+  const bottomRow = rowOrders[lastGen] || [];
+  const bottomY = MARGIN + (genKeys.length - 1) * ROW_H;
+  let bx = 0;
+  for (let i = 0; i < bottomRow.length; i++) {
+    nodePos[bottomRow[i].id] = {x: bx, y: bottomY};
+    if (i < bottomRow.length - 1) {
+      const curr = bottomRow[i], next = bottomRow[i+1];
+      if (curr.spouse === next.id || next.spouse === curr.id) {
+        bx += imgSize + COUPLE_GAP;
+      } else if (parentOf[curr.id] !== parentOf[next.id]) {
+        bx += imgSize + FAMILY_GAP;
+      } else {
+        bx += imgSize + LEAF_GAP;
+      }
+    }
+  }
+
+  // Pass 2: for each generation from second-to-bottom upward, position each person
+  // at the center of their children's span. If no children, use even spacing.
+  for (let gi = genKeys.length - 2; gi >= 0; gi--) {
+    const g = genKeys[gi];
+    const ordered = rowOrders[g];
+    const y = MARGIN + gi * ROW_H;
+
+    // First, compute ideal X for each member based on children
+    const idealX = {};
+    ordered.forEach(m => {
+      const kids = (m.children||[]).filter(cid => nodePos[cid]);
+      if (kids.length > 0) {
+        const xs = kids.map(cid => nodePos[cid].x + imgSize/2);
+        idealX[m.id] = (Math.min(...xs) + Math.max(...xs)) / 2 - imgSize/2;
+      }
+    });
+
+    // For couples, average their ideals or use spouse's children
+    ordered.forEach(m => {
+      if (m.spouse && idealX[m.spouse] !== undefined && idealX[m.id] !== undefined) {
+        const avg = (idealX[m.id] + idealX[m.spouse]) / 2;
+        if (m.id < m.spouse) {
+          idealX[m.id] = avg - imgSize/2 - COUPLE_GAP/2;
+          idealX[m.spouse] = avg + imgSize/2 + COUPLE_GAP/2 - imgSize;
+        }
+      } else if (m.spouse && idealX[m.spouse] !== undefined && idealX[m.id] === undefined) {
+        if (m.id < m.spouse) {
+          idealX[m.id] = idealX[m.spouse] - imgSize - COUPLE_GAP;
+        } else {
+          idealX[m.id] = idealX[m.spouse] + imgSize + COUPLE_GAP;
+        }
+      }
+    });
+
+    // Place members: use ideal if available, else space evenly after last placed
+    let lastX = -999;
+    ordered.forEach((m, i) => {
+      let x;
+      if (idealX[m.id] !== undefined) {
+        x = idealX[m.id];
+      } else {
+        // No children positioned yet — place after previous with gap
+        const prev = i > 0 ? ordered[i-1] : null;
+        if (prev && (prev.spouse === m.id || m.spouse === prev.id)) {
+          x = lastX + imgSize + COUPLE_GAP;
+        } else {
+          x = lastX + imgSize + FAMILY_GAP;
+        }
+      }
+      // Ensure no overlap with previous
+      const minX = lastX + imgSize + (i > 0 && (ordered[i-1].spouse === m.id || m.spouse === ordered[i-1].id) ? COUPLE_GAP : LEAF_GAP);
+      if (x < minX && i > 0) x = minX;
+      nodePos[m.id] = {x, y};
+      lastX = x;
+    });
+  }
+
+  // If only 1 generation, position it directly
+  if (genKeys.length === 1) {
+    const ordered = rowOrders[genKeys[0]];
+    let x = 0;
+    ordered.forEach((m, i) => {
+      nodePos[m.id] = {x, y: MARGIN};
+      if (i < ordered.length - 1) {
+        const next = ordered[i+1];
+        if (m.spouse === next.id || next.spouse === m.id) x += imgSize + COUPLE_GAP;
+        else x += imgSize + LEAF_GAP;
+      }
+    });
+  }
+
+  // Normalize: shift so leftmost is at MARGIN
+  let minX = Infinity;
+  members.forEach(m => { if (nodePos[m.id]) minX = Math.min(minX, nodePos[m.id].x); });
+  const shiftX = MARGIN - minX;
+  members.forEach(m => { if (nodePos[m.id]) nodePos[m.id].x += shiftX; });
+
+  // Compute canvas size
+  let maxX = 0;
+  members.forEach(m => { if (nodePos[m.id]) maxX = Math.max(maxX, nodePos[m.id].x + imgSize); });
+  const canvasW = Math.max(maxX + MARGIN, 400);
   const canvasH = Math.max(genKeys.length * ROW_H + 80, 300);
   graphCanvas.width = canvasW;
   graphCanvas.height = canvasH;
-
-  // Position rows centered
-  genKeys.forEach((g, gi) => {
-    const ordered = rowOrders[g];
-    let rowW = 0;
-    for (let i = 0; i < ordered.length; i++) {
-      rowW += imgSize;
-      if (i < ordered.length - 1) rowW += getGap(ordered[i], ordered[i+1]);
-    }
-    let x = (canvasW - rowW) / 2;
-    const y = MARGIN + gi * ROW_H;
-    ordered.forEach((m, i) => {
-      nodePos[m.id] = {x, y};
-      if (i < ordered.length - 1) x += imgSize + getGap(ordered[i], ordered[i+1]);
-    });
-  });
 
   ctx.clearRect(0, 0, canvasW, canvasH);
 
