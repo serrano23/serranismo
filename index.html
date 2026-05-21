@@ -558,6 +558,8 @@ window.addEventListener('mouseup', function() {
 // Touch pan
 canvasWrap.addEventListener('touchstart', function(e) {
   if (drawingMode || resizing || moving || drawing) return;
+  // Don't pan if touching a handle or move overlay
+  if (e.target.closest('#handles-layer') || e.target.classList.contains('handle')) return;
   if (e.touches.length === 1) {
     const t = e.touches[0];
     const {x: mx, y: my} = canvasCoords(t);
@@ -777,7 +779,7 @@ for (const p of points) {
   div.style.cursor = cursorForDir(p.dir);
   div.style.pointerEvents = "all";
   div.onmousedown = handleResizeStart(p.dir);
-  div.ontouchstart = function(e){ e.preventDefault(); handleResizeStart(p.dir)(e.touches[0]); };
+  div.ontouchstart = function(e){ e.preventDefault(); e.stopPropagation(); handleResizeStart(p.dir)(e.touches[0]); };
   handlesLayer.appendChild(div);
 }
   let moveDiv = document.createElement('div');
@@ -788,7 +790,7 @@ for (const p of points) {
   moveDiv.style.background = "rgba(0,0,0,0)";
   moveDiv.style.pointerEvents = "all";
   moveDiv.onmousedown = handleMoveStart(x, y, w, h);
-  moveDiv.ontouchstart = function(e){ e.preventDefault(); handleMoveStart(x, y, w, h)(e.touches[0]); };
+  moveDiv.ontouchstart = function(e){ e.preventDefault(); e.stopPropagation(); handleMoveStart(x, y, w, h)(e.touches[0]); };
   handlesLayer.appendChild(moveDiv);
 }
 function cursorForDir(dir) {
