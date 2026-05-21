@@ -22,7 +22,7 @@
     .button--subtle { background: #546e7a; font-size: .85rem; }
     .button--danger { background: #c62828; }
     #num-questions { width: 3.5em; text-align: center; font-size: 1rem; border: 2px solid #ccc; border-radius: 6px; padding: .3em; }
-    #session-load-error { color: #c62828; font-size: .85rem; padding: 0 1rem; }
+    #session-load-error { color: #c62828; font-size: .85rem; padding: 0 1rem; text-align: center; }
     
     /* Quiz section (inline, not modal) */
     #quiz-section { display: none; padding: 1.5rem 1rem; max-width: 500px; margin: 0 auto; }
@@ -79,7 +79,8 @@
     
     /* Graph modal (keep as overlay since it's canvas-based) */
     #graph-modal { display:none; position:fixed; left:0; top:0; width:100vw; height:100vh; z-index:1200; background:rgba(40,40,60,0.92); align-items:center; justify-content:center; }
-    #graph-modal-inner { background:#fff; border-radius:14px; padding:1.5em; position:relative; max-width:96vw; max-height:90vh; overflow:auto; -webkit-overflow-scrolling:touch; }
+    #graph-modal-inner { background:#fff; border-radius:14px; padding:1.5em; position:relative; max-width:96vw; max-height:90vh; overflow:auto; -webkit-overflow-scrolling:touch; margin-top:2.5em; }
+    #graph-close-btn { position:absolute; right:1em; top:0.6em; z-index:1210; }
     #graph-canvas { background:#f8f9fa; display:block; border-radius:12px; }
     
     /* Desktop tweaks */
@@ -177,8 +178,8 @@
 
 <!-- Grafo Modal (kept as overlay) -->
 <div id="graph-modal" role="dialog" aria-modal="true" aria-label="Grafo familiar">
+  <button class="button" id="graph-close-btn">✕</button>
   <div id="graph-modal-inner">
-    <button class="button" id="graph-close-btn" style="position:absolute; right:.8em; top:.8em;">✕</button>
     <canvas id="graph-canvas" width="900" height="600"></canvas>
   </div>
 </div>
@@ -467,6 +468,7 @@ sessionFileBtn.onchange = async function(e) {
     }
   };
   reader.readAsText(file);
+  sessionFileBtn.value = '';
 };
 
 // --- EDITOR TOGGLE ---
@@ -1251,151 +1253,213 @@ function drawFamilyGraphV2() {
   members.forEach(m => { const g=genMap[m.id]; if(!genGroups[g]) genGroups[g]=[]; genGroups[g].push(m); });
   const genKeys = Object.keys(genGroups).map(Number).sort((a,b)=>a-b);
 
-  // --- Layout: bottom-up positioning so parents sit above their children ---
+  // --- Layout: tree-based with subtree width reservation ---
   const imgSize = 52;
   const COUPLE_GAP = 14;
-  const LEAF_GAP = 32;    // gap between non-couple leaf members
-  const FAMILY_GAP = 50;  // extra gap between children of different parents
+  const SIBLING_GAP = 32;
+  const FAMILY_GAP = 50;
   const ROW_H = 120;
   const MARGIN = 30;
 
-  // Build ordered rows: gen 0 couples together, subsequent gens ordered by parent position
-  const rowOrders = {};
-  genKeys.forEach((g, gi) => {
-    const row = genGroups[g];
-    const placed = new Set();
-    const ordered = [];
-    if (gi > 0) {
-      const prev = rowOrders[genKeys[gi-1]] || [];
-      prev.forEach(p => {
-        (p.children||[]).forEach(cid => {
-          if (placed.has(cid)) return;
-          const child = row.find(x=>x.id===cid);
-          if (!child) return;
-          placed.add(child.id);
-          ordered.push(child);
-          if (child.spouse && row.some(x=>x.id===child.spouse) && !placed.has(child.spouse)) {
-            placed.add(child.spouse);
-            ordered.push(members.find(x=>x.id===child.spouse));
-          }
-        });
-      });
-    }
-    row.forEach(m => {
-      if (placed.has(m.id)) return;
-      placed.add(m.id);
-      ordered.push(m);
-      if (m.spouse && row.some(x=>x.id===m.spouse) && !placed.has(m.spouse)) {
-        placed.add(m.spouse);
-        ordered.push(members.find(x=>x.id===m.spouse));
-      }
-    });
-    rowOrders[g] = ordered;
-  });
+  // Build a tree structure: identify "family units" (couple or single parent) and their children
+  // Each family unit in a generation owns a subtree whose width is the max of:
+  //   - the unit itself (1 or 2 people)
+  //   - the total width of its children's subtrees in the next generation
+  // This ensures parents always center above their descendants.
 
-  // --- Two-pass: position bottom row first, then each upper row centered on children ---
-  const nodePos = {};
-  const lastGen = genKeys[genKeys.length - 1];
+  const memberById = {};
+  members.forEach(m => memberById[m.id] = m);
 
-  // Pass 1: lay out the bottom generation with even spacing, adding FAMILY_GAP between
-  // children of different parents
-  // First, figure out who each bottom-gen member's parent is
-  const parentOf = {}; // childId -> parentId (primary parent)
+  // Identify family units per generation: a unit is a couple (lower id is key) or a single person
+  // A person belongs to their spouse's unit if spouse has lower id
+  const unitOf = {}; // memberId -> unitId
+  const units = {}; // unitId -> { ids: [...], children: [childIds], gen }
   members.forEach(m => {
-    (m.children||[]).forEach(cid => {
-      if (!parentOf[cid]) {
-        // Use primary parent (lower id of couple)
-        if (m.spouse && m.id > m.spouse) parentOf[cid] = m.spouse;
-        else parentOf[cid] = m.id;
+    if (unitOf[m.id] !== undefined) return;
+    const g = genMap[m.id];
+    let unitId;
+    if (m.spouse && memberById[m.spouse] && genMap[m.spouse] === g) {
+      unitId = Math.min(m.id, m.spouse);
+      unitOf[m.id] = unitId;
+      unitOf[m.spouse] = unitId;
+      const primary = memberById[unitId];
+      const secondary = memberById[m.id === unitId ? m.spouse : m.id];
+      if (!units[unitId]) {
+        const kids = new Set();
+        (primary.children||[]).forEach(c => kids.add(c));
+        (secondary.children||[]).forEach(c => kids.add(c));
+        units[unitId] = { ids: [unitId, unitId === m.id ? m.spouse : m.id], children: [...kids], gen: g };
       }
-    });
-  });
-
-  // Lay out bottom generation
-  const bottomRow = rowOrders[lastGen] || [];
-  const bottomY = MARGIN + (genKeys.length - 1) * ROW_H;
-  let bx = 0;
-  for (let i = 0; i < bottomRow.length; i++) {
-    nodePos[bottomRow[i].id] = {x: bx, y: bottomY};
-    if (i < bottomRow.length - 1) {
-      const curr = bottomRow[i], next = bottomRow[i+1];
-      if (curr.spouse === next.id || next.spouse === curr.id) {
-        bx += imgSize + COUPLE_GAP;
-      } else if (parentOf[curr.id] !== parentOf[next.id]) {
-        bx += imgSize + FAMILY_GAP;
-      } else {
-        bx += imgSize + LEAF_GAP;
+    } else {
+      unitId = m.id;
+      unitOf[m.id] = unitId;
+      if (!units[unitId]) {
+        units[unitId] = { ids: [m.id], children: (m.children||[]).slice(), gen: g };
       }
     }
-  }
+  });
 
-  // Pass 2: for each generation from second-to-bottom upward, position each person
-  // at the center of their children's span. If no children, use even spacing.
-  for (let gi = genKeys.length - 2; gi >= 0; gi--) {
+  // Order units within each generation: units in gen>0 are ordered by their parent unit's order
+  const genUnits = {}; // gen -> [unitId, ...] in order
+  genKeys.forEach(g => genUnits[g] = []);
+  // Collect units per gen
+  Object.keys(units).forEach(uid => {
+    const u = units[uid];
+    genUnits[u.gen].push(Number(uid));
+  });
+  // Order gen 0 as-is (stable)
+  // For subsequent gens, order by parent unit position then by child order within parent
+  for (let gi = 1; gi < genKeys.length; gi++) {
     const g = genKeys[gi];
-    const ordered = rowOrders[g];
-    const y = MARGIN + gi * ROW_H;
-
-    // First, compute ideal X for each member based on children
-    const idealX = {};
-    ordered.forEach(m => {
-      const kids = (m.children||[]).filter(cid => nodePos[cid]);
-      if (kids.length > 0) {
-        const xs = kids.map(cid => nodePos[cid].x + imgSize/2);
-        idealX[m.id] = (Math.min(...xs) + Math.max(...xs)) / 2 - imgSize/2;
-      }
-    });
-
-    // For couples, average their ideals or use spouse's children
-    ordered.forEach(m => {
-      if (m.spouse && idealX[m.spouse] !== undefined && idealX[m.id] !== undefined) {
-        const avg = (idealX[m.id] + idealX[m.spouse]) / 2;
-        if (m.id < m.spouse) {
-          idealX[m.id] = avg - imgSize/2 - COUPLE_GAP/2;
-          idealX[m.spouse] = avg + imgSize/2 + COUPLE_GAP/2 - imgSize;
+    const parentGen = genKeys[gi-1];
+    const parentOrder = genUnits[parentGen];
+    const ordered = [];
+    const placed = new Set();
+    parentOrder.forEach(puid => {
+      const pu = units[puid];
+      (pu.children||[]).forEach(cid => {
+        const cuid = unitOf[cid];
+        if (cuid !== undefined && !placed.has(cuid) && units[cuid] && units[cuid].gen === g) {
+          placed.add(cuid);
+          ordered.push(cuid);
         }
-      } else if (m.spouse && idealX[m.spouse] !== undefined && idealX[m.id] === undefined) {
-        if (m.id < m.spouse) {
-          idealX[m.id] = idealX[m.spouse] - imgSize - COUPLE_GAP;
-        } else {
-          idealX[m.id] = idealX[m.spouse] + imgSize + COUPLE_GAP;
-        }
-      }
+      });
     });
+    // Any remaining units in this gen (orphans)
+    genUnits[g].forEach(uid => { if (!placed.has(uid)) ordered.push(uid); });
+    genUnits[g] = ordered;
+  }
 
-    // Place members: use ideal if available, else space evenly after last placed
-    let lastX = -999;
-    ordered.forEach((m, i) => {
-      let x;
-      if (idealX[m.id] !== undefined) {
-        x = idealX[m.id];
+  // Compute subtree width for each unit (bottom-up)
+  const unitWidth = {}; // unitId -> pixel width
+  for (let gi = genKeys.length - 1; gi >= 0; gi--) {
+    const g = genKeys[gi];
+    genUnits[g].forEach(uid => {
+      const u = units[uid];
+      const selfWidth = u.ids.length === 2 ? (imgSize * 2 + COUPLE_GAP) : imgSize;
+      // Width of children subtrees
+      const childUnits = [];
+      const seenChildUnits = new Set();
+      (u.children||[]).forEach(cid => {
+        const cuid = unitOf[cid];
+        if (cuid !== undefined && !seenChildUnits.has(cuid)) {
+          seenChildUnits.add(cuid);
+          childUnits.push(cuid);
+        }
+      });
+      if (childUnits.length === 0) {
+        unitWidth[uid] = selfWidth;
       } else {
-        // No children positioned yet — place after previous with gap
-        const prev = i > 0 ? ordered[i-1] : null;
-        if (prev && (prev.spouse === m.id || m.spouse === prev.id)) {
-          x = lastX + imgSize + COUPLE_GAP;
-        } else {
-          x = lastX + imgSize + FAMILY_GAP;
-        }
+        let childrenTotalWidth = 0;
+        childUnits.forEach((cuid, i) => {
+          childrenTotalWidth += (unitWidth[cuid] || imgSize);
+          if (i < childUnits.length - 1) childrenTotalWidth += SIBLING_GAP;
+        });
+        unitWidth[uid] = Math.max(selfWidth, childrenTotalWidth);
       }
-      // Ensure no overlap with previous
-      const minX = lastX + imgSize + (i > 0 && (ordered[i-1].spouse === m.id || m.spouse === ordered[i-1].id) ? COUPLE_GAP : LEAF_GAP);
-      if (x < minX && i > 0) x = minX;
-      nodePos[m.id] = {x, y};
-      lastX = x;
     });
   }
 
-  // If only 1 generation, position it directly
+  // Position units top-down: each unit gets a horizontal span, centers itself within it
+  const nodePos = {};
+  const unitCenter = {}; // unitId -> center X
+
+  // Top generation: lay out sequentially
+  let topX = MARGIN;
+  genUnits[genKeys[0]].forEach((uid, i) => {
+    const w = unitWidth[uid] || imgSize;
+    const cx = topX + w / 2;
+    unitCenter[uid] = cx;
+    const u = units[uid];
+    if (u.ids.length === 2) {
+      nodePos[u.ids[0]] = { x: cx - imgSize - COUPLE_GAP/2, y: MARGIN };
+      nodePos[u.ids[1]] = { x: cx + COUPLE_GAP/2, y: MARGIN };
+    } else {
+      nodePos[u.ids[0]] = { x: cx - imgSize/2, y: MARGIN };
+    }
+    topX += w + FAMILY_GAP;
+  });
+
+  // Subsequent generations: position children within parent's allocated span
+  for (let gi = 0; gi < genKeys.length - 1; gi++) {
+    const g = genKeys[gi];
+    const nextG = genKeys[gi+1];
+    const y = MARGIN + (gi+1) * ROW_H;
+
+    genUnits[g].forEach(puid => {
+      const pu = units[puid];
+      const parentCx = unitCenter[puid];
+      const parentW = unitWidth[puid] || imgSize;
+      const leftEdge = parentCx - parentW / 2;
+
+      // Collect child units in order
+      const childUnitsList = [];
+      const seen = new Set();
+      (pu.children||[]).forEach(cid => {
+        const cuid = unitOf[cid];
+        if (cuid !== undefined && !seen.has(cuid) && units[cuid] && units[cuid].gen === nextG) {
+          seen.add(cuid);
+          childUnitsList.push(cuid);
+        }
+      });
+      if (childUnitsList.length === 0) return;
+
+      // Total children width
+      let totalCW = 0;
+      childUnitsList.forEach((cuid, i) => {
+        totalCW += (unitWidth[cuid] || imgSize);
+        if (i < childUnitsList.length - 1) totalCW += SIBLING_GAP;
+      });
+
+      // Center children block within parent's span
+      let cx = leftEdge + (parentW - totalCW) / 2;
+
+      childUnitsList.forEach(cuid => {
+        const cw = unitWidth[cuid] || imgSize;
+        const center = cx + cw / 2;
+        unitCenter[cuid] = center;
+        const cu = units[cuid];
+        if (cu.ids.length === 2) {
+          nodePos[cu.ids[0]] = { x: center - imgSize - COUPLE_GAP/2, y };
+          nodePos[cu.ids[1]] = { x: center + COUPLE_GAP/2, y };
+        } else {
+          nodePos[cu.ids[0]] = { x: center - imgSize/2, y };
+        }
+        cx += cw + SIBLING_GAP;
+      });
+    });
+
+    // Handle orphan units in this generation (no parent positioned them)
+    genUnits[nextG].forEach(uid => {
+      if (unitCenter[uid] !== undefined) return;
+      // Find rightmost positioned node
+      let maxX = MARGIN;
+      Object.values(nodePos).forEach(p => { if (p.x + imgSize > maxX) maxX = p.x + imgSize; });
+      const w = unitWidth[uid] || imgSize;
+      const cx = maxX + FAMILY_GAP + w/2;
+      unitCenter[uid] = cx;
+      const u = units[uid];
+      if (u.ids.length === 2) {
+        nodePos[u.ids[0]] = { x: cx - imgSize - COUPLE_GAP/2, y };
+        nodePos[u.ids[1]] = { x: cx + COUPLE_GAP/2, y };
+      } else {
+        nodePos[u.ids[0]] = { x: cx - imgSize/2, y };
+      }
+    });
+  }
+
+  // Handle single generation case
   if (genKeys.length === 1) {
-    const ordered = rowOrders[genKeys[0]];
-    let x = 0;
-    ordered.forEach((m, i) => {
-      nodePos[m.id] = {x, y: MARGIN};
-      if (i < ordered.length - 1) {
-        const next = ordered[i+1];
-        if (m.spouse === next.id || next.spouse === m.id) x += imgSize + COUPLE_GAP;
-        else x += imgSize + LEAF_GAP;
+    let x = MARGIN;
+    genUnits[genKeys[0]].forEach(uid => {
+      const u = units[uid];
+      if (u.ids.length === 2) {
+        nodePos[u.ids[0]] = { x, y: MARGIN };
+        nodePos[u.ids[1]] = { x: x + imgSize + COUPLE_GAP, y: MARGIN };
+        x += imgSize * 2 + COUPLE_GAP + SIBLING_GAP;
+      } else {
+        nodePos[u.ids[0]] = { x, y: MARGIN };
+        x += imgSize + SIBLING_GAP;
       }
     });
   }
