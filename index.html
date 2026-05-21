@@ -61,16 +61,28 @@
     .editor-content { display: none; background: #fff; border: 1px solid #e0e0e0; border-top: none; border-radius: 0 0 10px 10px; padding: 1rem; }
     .editor-content.open { display: block; }
     
-    .canvas-wrap { position: relative; border: 2px solid #ccc; border-radius: 8px; overflow: hidden; margin-bottom: 1rem; }
-    #main-canvas { display: block; cursor: crosshair; background: #fff; max-width: 100%; height: auto; }
-    .handle { position: absolute; width: 14px; height: 14px; background: #fff; border: 2px solid #1976d2; border-radius: 3px; z-index: 3; }
+    .canvas-col { position: relative; margin-bottom: 1rem; }
+    .canvas-controls { display: flex; gap: .4rem; align-items: center; margin-bottom: .5rem; flex-wrap: wrap; }
+    .canvas-controls .button { padding: .4em .7em; font-size: .85rem; }
+    .canvas-controls .zoom-label { font-size: .8rem; color: #555; min-width: 3em; text-align: center; }
+    .canvas-wrap { position: relative; border: 2px solid #ccc; border-radius: 8px; overflow: auto; max-height: 60vh; -webkit-overflow-scrolling: touch; }
+    .canvas-inner { position: relative; }
+    #main-canvas { display: block; background: #fff; cursor: grab; }
+    #main-canvas.drawing-mode { cursor: crosshair; }
+    #main-canvas.panning { cursor: grabbing; }
+    .handle { position: absolute; width: 22px; height: 22px; background: #fff; border: 3px solid #1976d2; border-radius: 4px; z-index: 3; }
     .handle:hover { background: #1976d2; }
+    @media (max-width: 767px) { .handle { width: 28px; height: 28px; border-width: 3px; } }
     
     #edit-pane { background: #f8f9fa; padding: 1em; border-radius: 8px; margin-bottom: 1em; }
     #edit-pane h3 { margin-top: 0; font-size: 1rem; }
     .form-row { margin-bottom: .6em; }
     .form-row label { font-size: .9rem; }
     .form-row input, .form-row select { font-size: 1rem; width: 100%; padding: .4em; border: 1px solid #ccc; border-radius: 6px; }
+    .children-chips { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .3rem; }
+    .child-chip { padding: .35em .7em; font-size: .85rem; border-radius: 16px; border: 1.5px solid #ccc; background: #fff; cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent; transition: all .15s; }
+    .child-chip.selected { background: #e3f2fd; border-color: #1976d2; color: #1976d2; font-weight: 500; }
+    .child-chip:active { transform: scale(0.95); }
     .member-list { background: #f8f9fa; padding: 1em; border-radius: 8px; }
     .member-list h2 { margin-top: 0; font-size: 1rem; }
     .member-list ul { padding-left: 1.2em; }
@@ -93,7 +105,7 @@
       .quiz-opt-btn { padding: 1.2em 1em; font-size: 1.05rem; }
       .editor-section { max-width: 900px; }
       .editor-content.open { display: flex; gap: 1.5em; flex-wrap: wrap; }
-      .canvas-wrap { flex: 1; min-width: 300px; }
+      .canvas-col { flex: 1; min-width: 300px; }
       .member-col { flex: 1; min-width: 260px; }
     }
   </style>
@@ -133,10 +145,21 @@
 <div class="editor-section">
   <button class="editor-toggle" id="editor-toggle">✏️ Editar familia</button>
   <div class="editor-content" id="editor-content">
-    <div class="canvas-wrap" id="canvas-section" style="position:relative;">
+    <div class="canvas-col" id="canvas-section">
       <label for="img-input" style="font-size:.9em;display:block;margin-bottom:.5em;">Subir imagen: <input type="file" id="img-input" accept="image/*"></label>
-      <canvas id="main-canvas" width="400" height="300"></canvas>
-      <div id="handles-layer" style="position:absolute;top:0;left:0;z-index:3;pointer-events:none;"></div>
+      <div class="canvas-controls">
+        <button class="button button--subtle" id="zoom-in-btn">➕</button>
+        <span class="zoom-label" id="zoom-label">100%</span>
+        <button class="button button--subtle" id="zoom-out-btn">➖</button>
+        <button class="button button--subtle" id="zoom-fit-btn">Ajustar</button>
+        <button class="button" id="add-member-btn">＋ Añadir miembro</button>
+      </div>
+      <div class="canvas-wrap" id="canvas-wrap">
+        <div class="canvas-inner" id="canvas-inner">
+          <canvas id="main-canvas" width="400" height="300"></canvas>
+          <div id="handles-layer" style="position:absolute;top:0;left:0;z-index:3;pointer-events:none;"></div>
+        </div>
+      </div>
     </div>
     <div class="member-col" id="member-section">
       <div id="edit-pane" style="display:none;">
@@ -158,9 +181,9 @@
             <span class="child-count" id="child-counter"></span>
           </div>
           <div class="form-row">
-            <label>Hijos:<br>
-              <select id="edit-children" multiple size="5"></select>
-            </label>
+            <label>Hijos:</label>
+            <div class="children-chips" id="edit-children-chips"></div>
+            <select id="edit-children" multiple size="5" style="display:none;"></select>
           </div>
           <div style="margin-top:1em; display:flex; gap:.5em; flex-wrap:wrap;">
             <button type="submit" class="button">Guardar</button>
@@ -190,11 +213,13 @@ let state = {
 };
 let selectedId = null;
 let drawing = false, startPt = null, tempRect = null;
+let drawingMode = false;
 let resizing = false, moving = false, resizeDir = null, moveOffset = null;
 let quiz = null;
 let quizStartTime = 0, quizEndTime = 0;
 let cachedImg = null;
 let rafId = null;
+let zoomLevel = 1;
 
 function escapeHtml(str) {
   return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
@@ -228,9 +253,16 @@ const graphModal = document.getElementById('graph-modal');
 const graphCanvas = document.getElementById('graph-canvas');
 const graphCloseBtn = document.getElementById('graph-close-btn');
 const canvasSection = document.getElementById('canvas-section');
+const canvasInner = document.getElementById('canvas-inner');
 const memberSection = document.getElementById('member-section');
 const editorToggleBtn = document.getElementById('editor-toggle');
 const editorContent = document.getElementById('editor-content');
+const zoomInBtn = document.getElementById('zoom-in-btn');
+const zoomOutBtn = document.getElementById('zoom-out-btn');
+const zoomFitBtn = document.getElementById('zoom-fit-btn');
+const zoomLabelEl = document.getElementById('zoom-label');
+const addMemberBtn = document.getElementById('add-member-btn');
+const childrenChips = document.getElementById('edit-children-chips');
 
 // --- SESSION SAVE/LOAD ---
 // Minimal, targeted change: replace old TXT export/import with compressed+encrypted .ses export/import.
@@ -477,41 +509,137 @@ editorToggleBtn.onclick = function() {
   editorContent.classList.toggle('open');
 };
 
+// --- ZOOM CONTROLS ---
+const canvasWrap = document.getElementById('canvas-wrap');
+function setZoom(level) {
+  zoomLevel = Math.max(0.25, Math.min(4, level));
+  zoomLabelEl.textContent = Math.round(zoomLevel * 100) + '%';
+  if (cachedImg) {
+    canvas.width = Math.round(state.imgWidth * zoomLevel);
+    canvas.height = Math.round(state.imgHeight * zoomLevel);
+    drawCanvas();
+  }
+}
+zoomInBtn.onclick = () => setZoom(zoomLevel + 0.25);
+zoomOutBtn.onclick = () => setZoom(zoomLevel - 0.25);
+zoomFitBtn.onclick = () => {
+  if (!state.image) { setZoom(1); return; }
+  const wrapW = canvasWrap.clientWidth - 4;
+  const fitScale = Math.min(1, wrapW / state.imgWidth);
+  setZoom(fitScale);
+};
+
+// --- DRAG TO PAN (when not in drawing mode) ---
+let panning = false, panStart = {x:0,y:0}, scrollStart = {x:0,y:0};
+canvasWrap.addEventListener('mousedown', function(e) {
+  if (drawingMode || resizing || moving) return;
+  if (e.target !== canvas) return;
+  // Check if clicking a member
+  const {x: mx, y: my} = canvasCoords(e);
+  const clickedMember = state.members.some(m => {
+    let [x,y,w,h] = m.rect;
+    return mx >= x && mx <= x+w && my >= y && my <= y+h;
+  });
+  if (clickedMember) return;
+  panning = true;
+  panStart = {x: e.clientX, y: e.clientY};
+  scrollStart = {x: canvasWrap.scrollLeft, y: canvasWrap.scrollTop};
+  canvas.classList.add('panning');
+  e.preventDefault();
+});
+window.addEventListener('mousemove', function(e) {
+  if (!panning) return;
+  canvasWrap.scrollLeft = scrollStart.x - (e.clientX - panStart.x);
+  canvasWrap.scrollTop = scrollStart.y - (e.clientY - panStart.y);
+});
+window.addEventListener('mouseup', function() {
+  if (panning) { panning = false; canvas.classList.remove('panning'); }
+});
+// Touch pan
+canvasWrap.addEventListener('touchstart', function(e) {
+  if (drawingMode || resizing || moving || drawing) return;
+  if (e.touches.length === 1) {
+    const t = e.touches[0];
+    const {x: mx, y: my} = canvasCoords(t);
+    const clickedMember = state.members.some(m => {
+      let [x,y,w,h] = m.rect;
+      return mx >= x && mx <= x+w && my >= y && my <= y+h;
+    });
+    if (!clickedMember) {
+      panning = true;
+      panStart = {x: t.clientX, y: t.clientY};
+      scrollStart = {x: canvasWrap.scrollLeft, y: canvasWrap.scrollTop};
+    }
+  }
+}, {passive: true});
+canvasWrap.addEventListener('touchmove', function(e) {
+  if (!panning) return;
+  const t = e.touches[0];
+  canvasWrap.scrollLeft = scrollStart.x - (t.clientX - panStart.x);
+  canvasWrap.scrollTop = scrollStart.y - (t.clientY - panStart.y);
+  e.preventDefault();
+}, {passive: false});
+canvasWrap.addEventListener('touchend', function() {
+  panning = false;
+});
+
+// --- ADD MEMBER BUTTON (toggle drawing mode) ---
+addMemberBtn.onclick = function() {
+  if (!state.image) { alert('Primero sube una imagen.'); return; }
+  drawingMode = !drawingMode;
+  canvas.classList.toggle('drawing-mode', drawingMode);
+  addMemberBtn.textContent = drawingMode ? '✕ Cancelar dibujo' : '＋ Añadir miembro';
+  addMemberBtn.classList.toggle('button--danger', drawingMode);
+};
+
 // --- IMAGE HANDLING ---
 function loadImage(dataUrl) {
   const img = new window.Image();
   img.onload = function() {
     state.imgWidth = img.width;
     state.imgHeight = img.height;
-    canvas.width = img.width;
-    canvas.height = img.height;
     cachedImg = img;
-    drawCanvas();
+    // Auto-fit zoom
+    setTimeout(() => {
+      const wrapW = canvasWrap.clientWidth - 4;
+      if (state.imgWidth > wrapW) {
+        setZoom(wrapW / state.imgWidth);
+      } else {
+        zoomLevel = 1;
+        canvas.width = state.imgWidth;
+        canvas.height = state.imgHeight;
+        zoomLabelEl.textContent = '100%';
+        drawCanvas();
+      }
+    }, 50);
   };
   img.src = dataUrl;
 }
 function drawCanvas() {
-  const ctx = canvas.getContext('2d');
-  ctx.clearRect(0,0,canvas.width,canvas.height);
-  if (state.image && cachedImg) {
-    ctx.drawImage(cachedImg, 0, 0, canvas.width, canvas.height);
-    state.members.forEach(m=>{
-      ctx.strokeStyle = (m.id === selectedId) ? '#1976d2' : '#d32f2f';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(...m.rect);
+const ctx = canvas.getContext('2d');
+ctx.clearRect(0,0,canvas.width,canvas.height);
+if (state.image && cachedImg) {
+  ctx.save();
+  ctx.scale(zoomLevel, zoomLevel);
+  ctx.drawImage(cachedImg, 0, 0, state.imgWidth, state.imgHeight);
+  state.members.forEach(m=>{
+    ctx.strokeStyle = (m.id === selectedId) ? '#1976d2' : '#d32f2f';
+    ctx.lineWidth = 2 / zoomLevel;
+    ctx.strokeRect(...m.rect);
       if(m.name){
         ctx.fillStyle = 'rgba(25,118,210,0.85)';
-        ctx.font = '13px sans-serif';
+        ctx.font = `${13/zoomLevel}px sans-serif`;
         ctx.fillText(m.name, m.rect[0]+2, m.rect[1]+14);
       }
     });
     if (tempRect) {
       ctx.strokeStyle = 'deepskyblue';
-      ctx.lineWidth = 2;
-      ctx.setLineDash([6, 4]);
+      ctx.lineWidth = 2 / zoomLevel;
+      ctx.setLineDash([6 / zoomLevel, 4 / zoomLevel]);
       ctx.strokeRect(...tempRect);
       ctx.setLineDash([]);
     }
+    ctx.restore();
   } else if (!state.image) {
     ctx.fillStyle = '#eee'; ctx.fillRect(0,0,canvas.width,canvas.height);
     ctx.fillStyle = '#888';
@@ -535,16 +663,18 @@ imgInput.onchange = function(e) {
 };
 function canvasCoords(e) {
   const rect = canvas.getBoundingClientRect();
-  const scaleX = canvas.width / rect.width;
-  const scaleY = canvas.height / rect.height;
+  // Canvas pixel coords: mouse position relative to element, scaled to internal (original image) coords
+  const px = e.clientX - rect.left;
+  const py = e.clientY - rect.top;
   return {
-    x: Math.round((e.clientX - rect.left) * scaleX),
-    y: Math.round((e.clientY - rect.top) * scaleY)
+    x: Math.round(px / zoomLevel),
+    y: Math.round(py / zoomLevel)
   };
 }
 canvas.addEventListener('mousedown', function(e) {
   if (!state.image) return;
   const {x: mx, y: my} = canvasCoords(e);
+  // First check if clicking an existing member (always works)
   let found = false;
   for (let m of state.members) {
     let [x,y,w,h] = m.rect;
@@ -556,10 +686,14 @@ canvas.addEventListener('mousedown', function(e) {
       break;
     }
   }
-  if (!found) {
+  if (!found && drawingMode) {
     drawing = true;
     startPt = {x: mx, y: my};
     tempRect = null;
+    selectedId = null;
+    drawCanvas();
+    showEditPane(null);
+  } else if (!found) {
     selectedId = null;
     drawCanvas();
     showEditPane(null);
@@ -585,6 +719,11 @@ canvas.addEventListener('mouseup', function(e) {
   drawCanvas(); renderMemberList();
   selectedId = id;
   showEditPane(id, true);
+  // Exit drawing mode after adding
+  drawingMode = false;
+  canvas.classList.remove('drawing-mode');
+  addMemberBtn.textContent = '＋ Añadir miembro';
+  addMemberBtn.classList.remove('button--danger');
 });
 canvas.addEventListener('mouseleave', function() {
   if (drawing) { drawing = false; tempRect = null; drawCanvas(); }
@@ -597,45 +736,50 @@ canvas.addEventListener('touchstart', function(e) {
 }, {passive:false});
 canvas.addEventListener('touchmove', function(e) {
   if (!state.image) return;
+  if (!drawing) return; // allow native scroll/pan when not drawing
   e.preventDefault();
   const t = e.touches[0];
   canvas.dispatchEvent(new MouseEvent('mousemove', {clientX:t.clientX, clientY:t.clientY}));
 }, {passive:false});
 canvas.addEventListener('touchend', function(e) {
   if (!state.image) return;
+  if (!drawing) return;
   e.preventDefault();
   canvas.dispatchEvent(new MouseEvent('mouseup', {clientX:0, clientY:0}));
 }, {passive:false});
 function drawHandles() {
-  handlesLayer.innerHTML = '';
-  if (!selectedId) return;
-  let m = state.members.find(x=>x.id===selectedId);
-  if (!m) return;
-  let [x,y,w,h] = m.rect;
-  // Scale from canvas internal coords to CSS-rendered coords
-  const rect = canvas.getBoundingClientRect();
-  const sx = rect.width / canvas.width;
-  const sy = rect.height / canvas.height;
-  handlesLayer.style.width = rect.width+"px";
-  handlesLayer.style.height = rect.height+"px";
+handlesLayer.innerHTML = '';
+if (!selectedId) return;
+let m = state.members.find(x=>x.id===selectedId);
+if (!m) return;
+let [x,y,w,h] = m.rect;
+  // Use zoom level directly for positioning
+  const sx = zoomLevel;
+  const sy = zoomLevel;
+  handlesLayer.style.width = canvas.width+"px";
+  handlesLayer.style.height = canvas.height+"px";
   handlesLayer.style.top = canvas.offsetTop+"px";
   handlesLayer.style.left = canvas.offsetLeft+"px";
-  let points = [
-    {x: x, y: y, dir:"nw"}, {x: x+w/2, y: y, dir:"n"}, {x: x+w, y: y, dir:"ne"},
-    {x: x+w, y: y+h/2, dir:"e"}, {x: x+w, y: y+h, dir:"se"},
-    {x: x+w/2, y: y+h, dir:"s"}, {x: x, y: y+h, dir:"sw"}, {x: x, y: y+h/2, dir:"w"}
-  ];
-  for (const p of points) {
-    let div = document.createElement('div');
-    div.className = "handle";
-    div.style.left = (Math.round(p.x*sx)-7)+"px";
-    div.style.top  = (Math.round(p.y*sy)-7)+"px";
-    div.style.cursor = cursorForDir(p.dir);
-    div.style.pointerEvents = "all";
-    div.onmousedown = handleResizeStart(p.dir);
-    div.ontouchstart = function(e){ e.preventDefault(); handleResizeStart(p.dir)(e.touches[0]); };
-    handlesLayer.appendChild(div);
-  }
+const handleSize = window.innerWidth < 768 ? 28 : 22;
+const halfH = Math.round(handleSize / 2);
+let points = [
+  {x: x, y: y, dir:"nw"}, {x: x+w/2, y: y, dir:"n"}, {x: x+w, y: y, dir:"ne"},
+  {x: x+w, y: y+h/2, dir:"e"}, {x: x+w, y: y+h, dir:"se"},
+  {x: x+w/2, y: y+h, dir:"s"}, {x: x, y: y+h, dir:"sw"}, {x: x, y: y+h/2, dir:"w"}
+];
+for (const p of points) {
+  let div = document.createElement('div');
+  div.className = "handle";
+  div.style.width = handleSize+"px";
+  div.style.height = handleSize+"px";
+  div.style.left = (Math.round(p.x*sx)-halfH)+"px";
+  div.style.top  = (Math.round(p.y*sy)-halfH)+"px";
+  div.style.cursor = cursorForDir(p.dir);
+  div.style.pointerEvents = "all";
+  div.onmousedown = handleResizeStart(p.dir);
+  div.ontouchstart = function(e){ e.preventDefault(); handleResizeStart(p.dir)(e.touches[0]); };
+  handlesLayer.appendChild(div);
+}
   let moveDiv = document.createElement('div');
   moveDiv.style.position = "absolute";
   moveDiv.style.left = Math.round(x*sx)+"px"; moveDiv.style.top = Math.round(y*sy)+"px";
@@ -758,8 +902,8 @@ function handleMoving(e) {
   if (!m) return;
   const {x: mx, y: my} = canvasCoords(e);
   let newX = mx-moveOffset.dx, newY = my-moveOffset.dy;
-  newX = Math.max(0, Math.min(canvas.width-moveOffset.w, newX));
-  newY = Math.max(0, Math.min(canvas.height-moveOffset.h, newY));
+  newX = Math.max(0, Math.min(state.imgWidth-moveOffset.w, newX));
+  newY = Math.max(0, Math.min(state.imgHeight-moveOffset.h, newY));
   m.rect[0]=newX; m.rect[1]=newY;
   if (!rafId) rafId = requestAnimationFrame(()=>{ rafId = null; drawCanvas(); });
 }
@@ -828,12 +972,26 @@ function showEditPane(id, focusName) {
   let spouseChildren = (spouseId ? (state.members.find(x=>x.id===spouseId)?.children || []) : []);
   let allChildren = Array.from(new Set([...(m.children||[]), ...(spouseChildren)]));
   editChildren.innerHTML = '';
+  childrenChips.innerHTML = '';
   state.members.filter(x=>x.id!==id && x.id!==spouseId).forEach(x=>{
     const opt = document.createElement('option');
     opt.value = x.id;
     opt.textContent = x.name || 'Sin nombre';
     if (allChildren.includes(x.id)) opt.selected = true;
     editChildren.appendChild(opt);
+    // Chip
+    const chip = document.createElement('span');
+    chip.className = 'child-chip' + (allChildren.includes(x.id) ? ' selected' : '');
+    chip.textContent = x.name || 'Sin nombre';
+    chip.dataset.id = x.id;
+    chip.onclick = function() {
+      chip.classList.toggle('selected');
+      // Sync hidden select
+      const opt = editChildren.querySelector(`option[value="${x.id}"]`);
+      if (opt) opt.selected = chip.classList.contains('selected');
+      updateChildCounter();
+    };
+    childrenChips.appendChild(chip);
   });
   updateChildCounter();
   editChildren.onchange = updateChildCounter;
@@ -843,6 +1001,11 @@ function showEditPane(id, focusName) {
       let spouseChildren = (state.members.find(x=>x.id===selectedSpouseId)?.children || []);
       Array.from(editChildren.options).forEach(opt=>{
         opt.selected = spouseChildren.includes(Number(opt.value));
+      });
+      // Sync chips
+      childrenChips.querySelectorAll('.child-chip').forEach(chip => {
+        const cid = Number(chip.dataset.id);
+        chip.classList.toggle('selected', spouseChildren.includes(cid));
       });
       updateChildCounter();
     }
