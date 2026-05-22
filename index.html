@@ -751,7 +751,8 @@ canvas.addEventListener('touchend', function(e) {
 }, {passive:false});
 function drawHandles() {
 // Don't recreate handles during active resize/move — it destroys touch targets
-if (resizing || moving) return;
+if (resizing || moving) { handlesLayer.style.visibility = 'hidden'; return; }
+handlesLayer.style.visibility = '';
 handlesLayer.innerHTML = '';
 if (!selectedId) return;
 let m = state.members.find(x=>x.id===selectedId);
