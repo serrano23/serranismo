@@ -750,6 +750,8 @@ canvas.addEventListener('touchend', function(e) {
   touchInfo = null;
 }, {passive:false});
 function drawHandles() {
+// Don't recreate handles during active resize/move — it destroys touch targets
+if (resizing || moving) return;
 handlesLayer.innerHTML = '';
 if (!selectedId) return;
 let m = state.members.find(x=>x.id===selectedId);
@@ -809,6 +811,7 @@ function handleResizeStart(dir) {
     window.addEventListener('mouseup', handleResizeEnd);
     window.addEventListener('touchmove', handleResizingTouch, {passive:false});
     window.addEventListener('touchend', handleResizeEndTouch);
+    window.addEventListener('touchcancel', handleResizeEndTouch);
   };
 }
 function handleResizing(e) {
@@ -883,6 +886,8 @@ function handleResizeEnd() {
   window.removeEventListener('mouseup', handleResizeEnd);
   window.removeEventListener('touchmove', handleResizingTouch);
   window.removeEventListener('touchend', handleResizeEndTouch);
+  window.removeEventListener('touchcancel', handleResizeEndTouch);
+  drawCanvas();
 }
 function handleResizingTouch(e) { e.preventDefault(); handleResizing(e.touches[0]); }
 function handleResizeEndTouch(e) { handleResizeEnd(); }
@@ -896,6 +901,7 @@ function handleMoveStart(x, y, w, h) {
     window.addEventListener('mouseup', handleMoveEnd);
     window.addEventListener('touchmove', handleMovingTouch, {passive:false});
     window.addEventListener('touchend', handleMoveEndTouch);
+    window.addEventListener('touchcancel', handleMoveEndTouch);
   };
 }
 function handleMoving(e) {
@@ -916,6 +922,8 @@ function handleMoveEnd() {
   window.removeEventListener('mouseup', handleMoveEnd);
   window.removeEventListener('touchmove', handleMovingTouch);
   window.removeEventListener('touchend', handleMoveEndTouch);
+  window.removeEventListener('touchcancel', handleMoveEndTouch);
+  drawCanvas();
 }
 function handleMovingTouch(e) { e.preventDefault(); handleMoving(e.touches[0]); }
 function handleMoveEndTouch(e) { handleMoveEnd(); }
